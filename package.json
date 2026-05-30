@@ -1,0 +1,42 @@
+{
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "vite build",
+        "dev": "vite"
+    },
+    "devDependencies": {
+        "@vitejs/plugin-vue": "^6.0.7",
+        "autoprefixer": "^10.5.0",
+        "axios": "^1.7.4",
+        "concurrently": "^9.0.1",
+        "laravel-vite-plugin": "^1.2.0",
+        "postcss": "^8.5.14",
+        "tailwindcss": "^3.4.19",
+        "vite": "^6.0.11",
+        "vite-plugin-vue-devtools": "^8.1.2"
+    },
+    "dependencies": {
+        "echarts": "^5.4.3",
+        "highlight.js": "^11.9.0",
+        "laravel-echo": "^1.19.0",
+        "lucide-vue-next": "^0.294.0",
+        "markdown-it": "^14.0.0",
+        "pinia": "^2.1.7",
+        "pusher-js": "^8.4.0-rc2",
+        "vue": "^3.5.34",
+        "vue-echarts": "^6.6.1",
+        "vue-router": "^4.6.4",
+        "ws": "^8.21.0"
+    },
+    "name": "ns",
+    "version": "1.0.0",
+    "description": "Nexus Laravel application.",
+    "main": "postcss.config.js",
+    "directories": {
+        "test": "tests"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC"
+}
