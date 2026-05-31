@@ -4,13 +4,22 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Models\Contact;
+use App\Models\ContactAnalysisRun;
+use App\Models\ContactImportBatch;
 use App\Models\ContactIdentifier;
+use App\Models\ContactMemoryMaintenanceRun;
+use App\Models\ContactMessage;
+use App\Models\ContactMessageThread;
+use App\Models\ContactReplyRule;
+use App\Models\ContactTopic;
 use App\Services\ContactHubService;
 use App\Services\LogService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Illuminate\Support\Facades\Cache;
+use App\Http\Resources\ContactResource;
+use Illuminate\Support\Str;
 
 class ContactController extends Controller
 {
@@ -39,7 +48,7 @@ class ContactController extends Controller
         $contacts = $query->orderBy('name')
             ->paginate($request->integer('per_page', 20));
 
-        return response()->json(['data' => $contacts]);
+        return ContactResource::collection($contacts);
     }
 
     public function store(Request $request)
@@ -52,7 +61,7 @@ class ContactController extends Controller
                 $existingId = Cache::get($cacheKey);
                 $existing = Contact::find($existingId);
                 if ($existing) {
-                    return response()->json(['data' => $existing], 200);
+                    return response()->json(['data' => new ContactResource($existing)], 200);
                 }
             }
         }
@@ -79,34 +88,34 @@ class ContactController extends Controller
             'identifiers' => ['nullable', 'array'],
             'identifiers.*.type' => ['required_with:identifiers', Rule::in(ContactIdentifier::TYPES)],
             'identifiers.*.value' => ['required_with:identifiers', 'string', 'max:255'],
-            'identifiers.*.trusted' => ['nullable', 'boolean'],
+            'identifiers.*.is_primary' => ['nullable', 'boolean'],
         ]);
 
         $identifierCandidates = collect();
 
         if (!empty($data['email'])) {
-            $identifierCandidates->push(['type' => ContactIdentifier::TYPE_EMAIL, 'value' => $data['email'], 'trusted' => true]);
+            $identifierCandidates->push(['type' => ContactIdentifier::TYPE_EMAIL, 'value' => $data['email'], 'is_primary' => true]);
         }
 
         if (!empty($data['phone'])) {
-            $identifierCandidates->push(['type' => ContactIdentifier::TYPE_PHONE, 'value' => $data['phone'], 'trusted' => true]);
+            $identifierCandidates->push(['type' => ContactIdentifier::TYPE_PHONE, 'value' => $data['phone'], 'is_primary' => true]);
         }
 
         foreach ($data['emails'] ?? [] as $email) {
             if ($email) {
-                $identifierCandidates->push(['type' => ContactIdentifier::TYPE_EMAIL, 'value' => $email, 'trusted' => true]);
+                $identifierCandidates->push(['type' => ContactIdentifier::TYPE_EMAIL, 'value' => $email, 'is_primary' => false]);
             }
         }
 
         foreach ($data['phones'] ?? [] as $phone) {
             if ($phone) {
-                $identifierCandidates->push(['type' => ContactIdentifier::TYPE_PHONE, 'value' => $phone, 'trusted' => true]);
+                $identifierCandidates->push(['type' => ContactIdentifier::TYPE_PHONE, 'value' => $phone, 'is_primary' => false]);
             }
         }
 
         foreach ($data['external_ids'] ?? [] as $externalId) {
             if ($externalId) {
-                $identifierCandidates->push(['type' => ContactIdentifier::TYPE_EXTERNAL_ID, 'value' => $externalId, 'trusted' => true]);
+                $identifierCandidates->push(['type' => ContactIdentifier::TYPE_EXTERNAL_ID, 'value' => $externalId, 'is_primary' => false]);
             }
         }
 
@@ -115,7 +124,7 @@ class ContactController extends Controller
                 $identifierCandidates->push([
                     'type' => $identifier['type'],
                     'value' => $identifier['value'],
-                    'trusted' => $identifier['trusted'] ?? true,
+                    'is_primary' => $identifier['is_primary'] ?? false,
                 ]);
             }
         }
@@ -186,7 +195,7 @@ class ContactController extends Controller
 
         $status = $existingContact ? 200 : 201;
 
-        return response()->json(['data' => $contact], $status);
+        return response()->json(['data' => new ContactResource($contact)], $status);
     }
 
     protected function syncContactIdentifiers(Contact $contact, array $identifiers): void
@@ -206,7 +215,7 @@ class ContactController extends Controller
                 $contact->identifiers()->create([
                     'type' => $identifier['type'],
                     'value' => $normalized,
-                    'trusted' => $identifier['trusted'] ?? true,
+                    'is_primary' => $identifier['is_primary'] ?? false,
                 ]);
             }
         }
@@ -218,16 +227,16 @@ class ContactController extends Controller
             'conversations',
             'notes',
             'tags',
-            'rules',
+            'replyRules',
             'customFields',
             'memories',
             'identifiers',
-            'relationships.relatedContact',
+            'relationships.targetContact',
             'preferences',
             'aliases',
         ])->findOrFail($id);
 
-        return response()->json(['data' => $contact]);
+        return response()->json(['data' => new ContactResource($contact)]);
     }
 
     public function update(Request $request, $id)
@@ -265,7 +274,7 @@ class ContactController extends Controller
         } catch (\Throwable $e) {
         }
 
-        return response()->json(['data' => $contact]);
+        return response()->json(['data' => new ContactResource($contact)]);
     }
 
     public function merge(Request $request, $id)
@@ -281,7 +290,7 @@ class ContactController extends Controller
 
         $merged = $this->contactHubService->mergeContacts($contact, $sourceContact, $data['strategy']);
 
-        return response()->json(['data' => $merged]);
+        return response()->json(['data' => new ContactResource($merged)]);
     }
 
     public function erase($id)
@@ -312,7 +321,7 @@ class ContactController extends Controller
 
         $updated = $this->contactHubService->enrichContact($contact, $data['profile_data'], $data['source'] ?? null);
 
-        return response()->json(['data' => $updated]);
+        return response()->json(['data' => new ContactResource($updated)]);
     }
 
     public function destroy($id)
@@ -346,9 +355,9 @@ class ContactController extends Controller
 
     public function getRules($id)
     {
-        $contact = Contact::with('rules')->findOrFail($id);
+        $contact = Contact::with('replyRules')->findOrFail($id);
 
-        return response()->json(['data' => ['contact_id' => $id, 'rules' => $contact->rules]]);
+        return response()->json(['data' => ['contact_id' => $id, 'rules' => $contact->replyRules]]);
     }
 
     public function getAnalytics(Request $request, $id)
@@ -520,5 +529,392 @@ class ContactController extends Controller
         $sortedEvents = $events->sortByDesc('date')->values()->all();
 
         return response()->json(['data' => $sortedEvents]);
+    }
+
+    public function messages(Request $request, $id)
+    {
+        Contact::findOrFail($id);
+
+        return response()->json([
+            'data' => $this->filteredMessages($request, (int) $id)->paginate($request->integer('per_page', 25)),
+        ]);
+    }
+
+    public function whatsappMessages(Request $request, $id)
+    {
+        Contact::findOrFail($id);
+
+        return response()->json([
+            'data' => $this->filteredMessages($request, (int) $id)
+                ->where('channel', 'whatsapp')
+                ->paginate($request->integer('per_page', 25)),
+        ]);
+    }
+
+    public function facebookMessages(Request $request, $id)
+    {
+        Contact::findOrFail($id);
+
+        return response()->json([
+            'data' => $this->filteredMessages($request, (int) $id)
+                ->where('channel', 'facebook_messenger')
+                ->paginate($request->integer('per_page', 25)),
+        ]);
+    }
+
+    public function threads(Request $request, $id)
+    {
+        Contact::findOrFail($id);
+
+        $threads = ContactMessageThread::query()
+            ->withCount('messages')
+            ->where('contact_id', $id)
+            ->when($request->filled('source'), fn ($query) => $query->where('source', $request->query('source')))
+            ->when($request->filled('channel'), fn ($query) => $query->where('channel', $request->query('channel')))
+            ->orderByDesc('updated_at')
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $threads]);
+    }
+
+    public function showThread(Request $request, $id, $thread)
+    {
+        Contact::findOrFail($id);
+
+        $threadModel = ContactMessageThread::query()
+            ->where('contact_id', $id)
+            ->findOrFail($thread);
+
+        $messages = $this->filteredMessages($request, (int) $id)
+            ->where('thread_id', $threadModel->id)
+            ->paginate($request->integer('per_page', 25));
+
+        return response()->json([
+            'data' => [
+                'thread' => $threadModel,
+                'messages' => $messages,
+            ],
+        ]);
+    }
+
+    public function audit(Request $request, $id)
+    {
+        Contact::findOrFail($id);
+
+        $events = \App\Models\ContactAuditEvent::query()
+            ->where('contact_id', $id)
+            ->orderByDesc('created_at')
+            ->paginate($request->integer('per_page', 25));
+
+        return response()->json(['data' => $events]);
+    }
+
+    public function exportBundle($id)
+    {
+        $contact = Contact::with([
+            'identifiers',
+            'aliases',
+            'preferences',
+            'relationships',
+            'replyRules',
+            'topics',
+            'messages',
+            'analysisFindings',
+            'auditEvents',
+        ])->findOrFail($id);
+
+        return response()->json([
+            'data' => [
+                'exported_at' => now()->toISOString(),
+                'schema_version' => 1,
+                'contact' => new ContactResource($contact),
+                'identifiers' => $contact->identifiers,
+                'aliases' => $contact->aliases,
+                'preferences' => $contact->preferences,
+                'relationships' => $contact->relationships,
+                'reply_rules' => $contact->replyRules,
+                'topics' => $contact->topics,
+                'messages' => $contact->messages,
+                'analysis_findings' => $contact->analysisFindings,
+                'audit_events' => $contact->auditEvents,
+            ],
+        ]);
+    }
+
+    public function listReplyRules($id)
+    {
+        Contact::findOrFail($id);
+
+        return response()->json([
+            'data' => ContactReplyRule::where('contact_id', $id)->orderByDesc('created_at')->get(),
+        ]);
+    }
+
+    public function storeReplyRule(Request $request, $id)
+    {
+        Contact::findOrFail($id);
+
+        $data = $request->validate([
+            'rule' => ['required', 'string'],
+            'is_active' => ['nullable', 'boolean'],
+            'source_type' => ['nullable', 'string', 'max:255'],
+            'source_id' => ['nullable', 'integer'],
+        ]);
+
+        $rule = ContactReplyRule::create(array_merge($data, [
+            'contact_id' => $id,
+            'is_active' => $data['is_active'] ?? true,
+        ]));
+
+        return response()->json(['data' => $rule], 201);
+    }
+
+    public function updateReplyRule(Request $request, $id, $rule)
+    {
+        Contact::findOrFail($id);
+
+        $ruleModel = ContactReplyRule::where('contact_id', $id)->findOrFail($rule);
+        $data = $request->validate([
+            'rule' => ['sometimes', 'required', 'string'],
+            'is_active' => ['sometimes', 'boolean'],
+            'source_type' => ['nullable', 'string', 'max:255'],
+            'source_id' => ['nullable', 'integer'],
+        ]);
+
+        $ruleModel->update($data);
+
+        return response()->json(['data' => $ruleModel]);
+    }
+
+    public function destroyReplyRule($id, $rule)
+    {
+        Contact::findOrFail($id);
+
+        $ruleModel = ContactReplyRule::where('contact_id', $id)->findOrFail($rule);
+        $ruleModel->delete();
+
+        return response()->json(['message' => 'reply rule deleted']);
+    }
+
+    public function topics($id)
+    {
+        Contact::findOrFail($id);
+
+        return response()->json([
+            'data' => ContactTopic::withCount('mentions')
+                ->where('contact_id', $id)
+                ->orderBy('topic')
+                ->get(),
+        ]);
+    }
+
+    public function intelligence($id)
+    {
+        $contact = Contact::with(['analysisFindings', 'topics', 'preferences', 'replyRules'])->findOrFail($id);
+
+        return response()->json([
+            'data' => [
+                'contact_id' => (int) $id,
+                'profile_confidence' => $contact->profile_confidence,
+                'memory_freshness' => $contact->memory_freshness,
+                'summary' => $contact->metadata['ai_summary'] ?? null,
+                'findings' => $contact->analysisFindings,
+                'topics' => $contact->topics,
+                'preferences' => $contact->preferences,
+                'reply_rules' => $contact->replyRules,
+            ],
+        ]);
+    }
+
+    public function persona($id)
+    {
+        $contact = Contact::findOrFail($id);
+
+        return response()->json([
+            'data' => [
+                'contact_id' => (int) $id,
+                'persona' => $contact->metadata['persona'] ?? null,
+                'profile_confidence' => $contact->profile_confidence,
+                'last_validated_at' => $contact->memory_freshness,
+            ],
+        ]);
+    }
+
+    public function talkSpecs($id)
+    {
+        $contact = Contact::with(['preferences', 'replyRules'])->findOrFail($id);
+
+        return response()->json([
+            'data' => [
+                'contact_id' => (int) $id,
+                'preferred_language' => $contact->metadata['preferred_language'] ?? null,
+                'tone_guidance' => $contact->metadata['tone_guidance'] ?? null,
+                'preferences' => $contact->preferences,
+                'reply_rules' => $contact->replyRules,
+            ],
+        ]);
+    }
+
+    public function emotionalBaseline($id)
+    {
+        $contact = Contact::findOrFail($id);
+
+        return response()->json([
+            'data' => [
+                'contact_id' => (int) $id,
+                'baseline' => $contact->metadata['emotional_baseline'] ?? 'unknown',
+                'source' => 'contact_metadata',
+                'last_interaction_at' => $contact->last_interaction_at,
+            ],
+        ]);
+    }
+
+    public function createAnalysisRun(Request $request, $id)
+    {
+        Contact::findOrFail($id);
+
+        $data = $request->validate([
+            'options' => ['nullable', 'array'],
+            'status' => ['nullable', Rule::in(['pending', 'queued', 'running', 'completed', 'failed'])],
+        ]);
+
+        $run = ContactAnalysisRun::create([
+            'contact_id' => $id,
+            'status' => $data['status'] ?? 'pending',
+            'options' => $data['options'] ?? [],
+            'trace_id' => (string) Str::uuid(),
+        ]);
+
+        return response()->json(['data' => $run], 201);
+    }
+
+    public function listAnalysisRuns(Request $request, $id)
+    {
+        Contact::findOrFail($id);
+
+        return response()->json([
+            'data' => ContactAnalysisRun::with('findings')
+                ->where('contact_id', $id)
+                ->orderByDesc('created_at')
+                ->paginate($request->integer('per_page', 20)),
+        ]);
+    }
+
+    public function showAnalysisRun($id, $run)
+    {
+        Contact::findOrFail($id);
+
+        return response()->json([
+            'data' => ContactAnalysisRun::with('findings')
+                ->where('contact_id', $id)
+                ->findOrFail($run),
+        ]);
+    }
+
+    public function batchAnalysisRun(Request $request)
+    {
+        $data = $request->validate([
+            'contact_ids' => ['required', 'array', 'min:1'],
+            'contact_ids.*' => ['integer', 'exists:contacts,id'],
+            'options' => ['nullable', 'array'],
+        ]);
+
+        $runs = collect($data['contact_ids'])->map(function ($contactId) use ($data) {
+            return ContactAnalysisRun::create([
+                'contact_id' => $contactId,
+                'status' => 'pending',
+                'options' => $data['options'] ?? [],
+                'trace_id' => (string) Str::uuid(),
+            ]);
+        });
+
+        return response()->json(['data' => $runs], 201);
+    }
+
+    public function applyAnalysisRun($run)
+    {
+        $analysisRun = ContactAnalysisRun::findOrFail($run);
+        $analysisRun->update(['status' => 'completed']);
+
+        return response()->json(['data' => $analysisRun]);
+    }
+
+    public function rollbackAnalysisRun($run)
+    {
+        $analysisRun = ContactAnalysisRun::findOrFail($run);
+        $analysisRun->findings()->delete();
+        $analysisRun->update(['status' => 'rolled_back']);
+
+        return response()->json(['data' => $analysisRun]);
+    }
+
+    public function memoryMaintenance(Request $request, $id = null)
+    {
+        if ($id !== null) {
+            Contact::findOrFail($id);
+        }
+
+        $data = $request->validate([
+            'operation' => ['required', 'string', 'max:255'],
+            'scope' => ['nullable', 'array'],
+            'dry_run' => ['nullable', 'boolean'],
+        ]);
+
+        $scope = $data['scope'] ?? [];
+        if ($id !== null) {
+            $scope['contact_id'] = (int) $id;
+        }
+
+        $run = ContactMemoryMaintenanceRun::create([
+            'operation' => $data['operation'],
+            'scope' => $scope,
+            'status' => $data['dry_run'] ?? false ? 'dry_run' : 'pending',
+            'results' => [
+                'message' => 'Maintenance run recorded. Queue execution can be attached when workers are enabled.',
+                'dry_run' => $data['dry_run'] ?? false,
+            ],
+        ]);
+
+        return response()->json(['data' => $run], 201);
+    }
+
+    public function memoryMaintenanceRuns(Request $request)
+    {
+        return response()->json([
+            'data' => ContactMemoryMaintenanceRun::orderByDesc('created_at')
+                ->paginate($request->integer('per_page', 20)),
+        ]);
+    }
+
+    public function showMemoryMaintenanceRun($run)
+    {
+        return response()->json(['data' => ContactMemoryMaintenanceRun::findOrFail($run)]);
+    }
+
+    protected function filteredMessages(Request $request, int $contactId)
+    {
+        return ContactMessage::query()
+            ->with(['thread', 'importBatch', 'senderContact'])
+            ->where('contact_id', $contactId)
+            ->when($request->filled('source'), fn ($query) => $query->where('source', $request->query('source')))
+            ->when($request->filled('channel'), fn ($query) => $query->where('channel', $request->query('channel')))
+            ->when($request->filled('direction'), fn ($query) => $query->where('direction', $request->query('direction')))
+            ->when($request->filled('language'), fn ($query) => $query->where('language', $request->query('language')))
+            ->when($request->filled('sender'), function ($query) use ($request) {
+                $sender = $request->query('sender');
+                $query->where(function ($inner) use ($sender) {
+                    $inner->where('sender_name', 'like', "%{$sender}%")
+                        ->orWhere('sender_identifier', 'like', "%{$sender}%");
+                });
+            })
+            ->when($request->filled('search'), function ($query) use ($request) {
+                $search = $request->query('search');
+                $query->where('body', 'like', "%{$search}%");
+            })
+            ->when($request->filled('date_from'), fn ($query) => $query->whereDate('source_timestamp', '>=', $request->query('date_from')))
+            ->when($request->filled('date_to'), fn ($query) => $query->whereDate('source_timestamp', '<=', $request->query('date_to')))
+            ->when($request->boolean('has_attachments'), fn ($query) => $query->whereNotNull('attachments_metadata'))
+            ->orderBy('source_timestamp')
+            ->orderBy('id');
     }
 }

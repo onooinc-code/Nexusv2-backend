@@ -35,7 +35,7 @@ class ContactsHubTest extends TestCase
 
         $searchResponse = $this->getJson('/api/v1/contacts?search=Hedra');
         $searchResponse->assertStatus(200);
-        $searchResponse->assertJsonPath('data.data.0.name', 'Hedra Nexus');
+        $searchResponse->assertJsonPath('data.0.name', 'Hedra Nexus');
 
         $updateResponse = $this->putJson("/api/v1/contacts/{$contactId}", [
             'title' => 'Executive AI',
@@ -165,36 +165,32 @@ class ContactsHubTest extends TestCase
         $identifierResponse = $this->postJson("/api/v1/contacts/{$primary->id}/identifiers", [
             'type' => 'email',
             'value' => 'test.person@example.com',
-            'trusted' => true,
+            'is_primary' => true,
         ]);
         $identifierResponse->assertStatus(201);
         $this->assertDatabaseHas('contact_identifiers', ['contact_id' => $primary->id, 'type' => 'email']);
 
         $relationshipResponse = $this->postJson("/api/v1/contacts/{$primary->id}/relationships", [
-            'related_contact_id' => $related->id,
-            'relationship_type' => 'partner',
-            'mention_count' => 3,
+            'target_contact_id' => $related->id,
+            'type' => 'partner',
+            'strength' => 0.9,
             'confidence' => 0.9,
         ]);
         $relationshipResponse->assertStatus(201);
-        $this->assertDatabaseHas('contact_relationships', ['contact_id' => $primary->id, 'related_contact_id' => $related->id]);
+        $this->assertDatabaseHas('contact_relationships', ['source_contact_id' => $primary->id, 'target_contact_id' => $related->id]);
 
         $preferenceResponse = $this->postJson("/api/v1/contacts/{$primary->id}/preferences", [
-            'preference_type' => 'timezone',
+            'key' => 'timezone',
             'value' => 'Europe/London',
-            'confidence' => 0.8,
-            'inferred_from_count' => 1,
         ]);
         $preferenceResponse->assertStatus(201);
-        $this->assertDatabaseHas('contact_preferences', ['contact_id' => $primary->id, 'preference_type' => 'timezone']);
+        $this->assertDatabaseHas('contact_preferences', ['contact_id' => $primary->id, 'key' => 'timezone']);
 
         $aliasResponse = $this->postJson("/api/v1/contacts/{$primary->id}/aliases", [
-            'alias_name' => 'Terminal Nexus',
-            'confidence' => 0.7,
-            'created_context' => 'internal briefing',
+            'name' => 'Terminal Nexus',
         ]);
         $aliasResponse->assertStatus(201);
-        $this->assertDatabaseHas('contact_aliases', ['primary_contact_id' => $primary->id, 'alias_name' => 'Terminal Nexus']);
+        $this->assertDatabaseHas('contact_aliases', ['contact_id' => $primary->id, 'name' => 'Terminal Nexus']);
 
         $identifiersIndex = $this->getJson("/api/v1/contacts/{$primary->id}/identifiers");
         $identifiersIndex->assertStatus(200)->assertJsonCount(1, 'data');

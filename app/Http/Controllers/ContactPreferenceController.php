@@ -20,7 +20,7 @@ class ContactPreferenceController extends Controller
      */
     public function index(Contact $contact)
     {
-        $preferences = $contact->preferences()->orderBy('preference_type')->get();
+        $preferences = $contact->preferences()->orderBy('key')->get();
         return response()->json(['data' => $preferences]);
     }
 
@@ -30,14 +30,9 @@ class ContactPreferenceController extends Controller
     public function store(Request $request, Contact $contact)
     {
         $data = $request->validate([
-            'preference_type' => ['required', 'string', 'max:255'],
+            'key' => ['required', 'string', 'max:255'],
             'value' => ['required', 'string', 'max:255'],
-            'confidence' => ['nullable', 'numeric', 'min:0', 'max:1'],
-            'inferred_from_count' => ['nullable', 'integer', 'min:0'],
         ]);
-
-        $data['confidence'] = $data['confidence'] ?? 1.0;
-        $data['inferred_from_count'] = $data['inferred_from_count'] ?? 0;
 
         $preference = $contact->preferences()->create($data);
 
@@ -69,10 +64,8 @@ class ContactPreferenceController extends Controller
         $preference = $contact->preferences()->findOrFail($preferenceId);
 
         $data = $request->validate([
-            'preference_type' => ['sometimes', 'string', 'max:255'],
+            'key' => ['sometimes', 'string', 'max:255'],
             'value' => ['sometimes', 'string', 'max:255'],
-            'confidence' => ['nullable', 'numeric', 'min:0', 'max:1'],
-            'inferred_from_count' => ['nullable', 'integer', 'min:0'],
         ]);
 
         $preference->update($data);

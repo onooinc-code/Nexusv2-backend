@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Str;
 
 class Workflow extends BaseModel
 {
@@ -23,13 +24,17 @@ class Workflow extends BaseModel
     public const TRIGGER_WEBHOOK = 'webhook';
 
     protected $fillable = [
+        'uuid',
         'name',
         'key',
         'description',
+        'is_system',
+        'owner_id',
         'steps',
         'trigger_type',
         'trigger_config',
         'status',
+        'version',
         'settings',
         'metadata',
         'is_active',
@@ -45,6 +50,8 @@ class Workflow extends BaseModel
         'settings' => 'json',
         'metadata' => 'json',
         'is_active' => 'boolean',
+        'is_system' => 'boolean',
+        'version' => 'integer',
         'last_executed_at' => 'datetime',
         'execution_count' => 'integer',
         'success_count' => 'integer',
@@ -55,14 +62,47 @@ class Workflow extends BaseModel
         'status' => self::STATUS_DRAFT,
         'trigger_type' => self::TRIGGER_MANUAL,
         'is_active' => true,
+        'is_system' => false,
+        'version' => 1,
         'execution_count' => 0,
         'success_count' => 0,
         'error_count' => 0,
     ];
 
+    protected static function booted(): void
+    {
+        parent::booted();
+
+        static::creating(function (Workflow $workflow) {
+            if (empty($workflow->uuid)) {
+                $workflow->uuid = (string) Str::uuid();
+            }
+        });
+    }
+
     public function tasks(): HasMany
     {
         return $this->hasMany(AgentTask::class);
+    }
+
+    public function versions(): HasMany
+    {
+        return $this->hasMany(WorkflowVersion::class);
+    }
+
+    public function executions(): HasMany
+    {
+        return $this->hasMany(WorkflowExecution::class);
+    }
+
+    public function stepLogs(): HasMany
+    {
+        return $this->hasMany(WorkflowStepLog::class);
+    }
+
+    public function latestVersion(): ?WorkflowVersion
+    {
+        return $this->versions()->latest('version_number')->first();
     }
 
     public function activeTasks()
@@ -82,7 +122,7 @@ class Workflow extends BaseModel
 
     public function canExecute(): bool
     {
-        return in_array($this->status, [self::STATUS_DRAFT, self::STATUS_PAUSED, self::STATUS_COMPLETED, self::STATUS_FAILED, self::STATUS_CANCELLED])
+        return in_array($this->status, [self::STATUS_DRAFT, self::STATUS_ACTIVE, self::STATUS_PAUSED, self::STATUS_COMPLETED, self::STATUS_FAILED, self::STATUS_CANCELLED])
             && $this->is_active;
     }
 

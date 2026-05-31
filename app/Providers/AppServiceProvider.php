@@ -15,9 +15,12 @@ use App\Events\MessageReceived;
 use App\Listeners\IndexMemory;
 use App\Listeners\LogJobFailed;
 use App\Listeners\LogWorkflowCompleted;
+use App\Listeners\LogWorkflowStarted;
+use App\Listeners\LogWorkflowStepCompleted;
 use App\Listeners\NotifyJobFailed;
 use App\Listeners\ProcessContactCreated;
 use App\Listeners\ProcessMessageReceived;
+use App\Listeners\TriggerWorkflowsForEvent;
 use App\Models\ConversationSession;
 use Illuminate\Queue\Events\JobFailed;
 use App\Models\User;
@@ -82,8 +85,12 @@ class AppServiceProvider extends ServiceProvider
         // Register event listeners
         Event::listen(MemoryIndexed::class, [IndexMemory::class, 'handle']);
         Event::listen(ContactCreated::class, [ProcessContactCreated::class, 'handle']);
+        Event::listen(ContactCreated::class, [TriggerWorkflowsForEvent::class, 'handle']);
         Event::listen(MessageReceived::class, [ProcessMessageReceived::class, 'handle']);
+        Event::listen(MessageReceived::class, [TriggerWorkflowsForEvent::class, 'handle']);
+        Event::listen(WorkflowStarted::class, [LogWorkflowStarted::class, 'handle']);
         Event::listen(WorkflowCompleted::class, [LogWorkflowCompleted::class, 'handle']);
+        Event::listen(\App\Events\WorkflowStepCompleted::class, [LogWorkflowStepCompleted::class, 'handle']);
         Event::listen(JobFailed::class, [LogJobFailed::class, 'handle']);
         Event::listen(JobFailed::class, [NotifyJobFailed::class, 'handle']);
 

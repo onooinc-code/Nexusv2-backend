@@ -4,42 +4,39 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+use Illuminate\Database\Eloquent\SoftDeletes;
+
 class ContactRelationship extends BaseModel
 {
-    public const TYPE_FAMILY = 'family';
-    public const TYPE_WORK = 'work';
-    public const TYPE_SOCIAL = 'social';
-    public const TYPE_VENDOR = 'vendor';
-    public const TYPE_PARTNER = 'partner';
-
-    public const TYPES = [
-        self::TYPE_FAMILY,
-        self::TYPE_WORK,
-        self::TYPE_SOCIAL,
-        self::TYPE_VENDOR,
-        self::TYPE_PARTNER,
-    ];
+    use SoftDeletes;
 
     protected $fillable = [
-        'contact_id',
-        'related_contact_id',
-        'relationship_type',
-        'mention_count',
+        'source_contact_id',
+        'target_contact_id',
+        'type',
+        'direction',
+        'strength',
         'confidence',
+        'evidence',
+        'start_date',
+        'end_date',
+        'notes',
     ];
 
     protected $casts = [
-        'mention_count' => 'integer',
-        'confidence' => 'float',
+        'strength' => 'decimal:2',
+        'confidence' => 'decimal:2',
+        'start_date' => 'date',
+        'end_date' => 'date',
     ];
 
-    public function contact(): BelongsTo
+    public function sourceContact(): BelongsTo
     {
-        return $this->belongsTo(Contact::class);
+        return $this->belongsTo(Contact::class, 'source_contact_id');
     }
 
-    public function relatedContact(): BelongsTo
+    public function targetContact(): BelongsTo
     {
-        return $this->belongsTo(Contact::class, 'related_contact_id');
+        return $this->belongsTo(Contact::class, 'target_contact_id');
     }
 }

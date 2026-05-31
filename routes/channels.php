@@ -3,6 +3,7 @@
 use App\Models\Conversation;
 use App\Models\ConversationSession;
 use App\Models\User;
+use App\Models\Workflow;
 use Illuminate\Support\Facades\Broadcast;
 
 Broadcast::channel('session.{sessionId}', function (User $user, string $sessionId) {
@@ -41,4 +42,18 @@ Broadcast::channel('job.batch.{batchId}', function (User $user, string $batchId)
 
 Broadcast::channel('admin.dlq', function (User $user) {
     return in_array($user->email, config('broadcasting.admin_emails', []), true);
+});
+
+Broadcast::channel('workflow.{workflowId}', function (User $user, string $workflowId) {
+    $workflow = Workflow::find($workflowId);
+
+    if (! $workflow) {
+        return false;
+    }
+
+    if (in_array($user->email, config('broadcasting.admin_emails', []), true)) {
+        return true;
+    }
+
+    return ! $workflow->owner_id || (int) $workflow->owner_id === (int) $user->id;
 });

@@ -7,6 +7,8 @@ use App\Models\Workflow;
 use App\Services\LogService;
 use App\Services\TaskQueueService;
 use App\Services\TaskRoutingService;
+use App\Services\TaskManagementService;
+use App\Services\TaskExecutionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 
@@ -15,7 +17,9 @@ class TaskController extends Controller
     public function __construct(
         protected LogService $logService,
         protected TaskQueueService $queue,
-        protected TaskRoutingService $router
+        protected TaskRoutingService $router,
+        protected TaskManagementService $taskManagementService,
+        protected TaskExecutionService $taskExecutionService
     ) {}
 
     public function index(Request $request)
@@ -241,5 +245,241 @@ class TaskController extends Controller
     public function getRoutingStats()
     {
         return response()->json(['data' => $this->router->getStats()]);
+    }
+
+    /**
+     * Manually force execution of a task
+     */
+    public function execute(Request $request, AgentTask $task)
+    {
+        try {
+            $this->taskExecutionService->execute($task);
+            
+            return response()->json([
+                'data' => $task->refresh(),
+                'message' => 'Task execution initiated'
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'error' => $e->getMessage()
+            ], 422);
+        } catch (\Throwable $e) {
+            $this->logService->error('Error executing task', [
+                'channel' => 'task',
+                'type' => 'execute_error',
+                'related_id' => $task->id,
+                'related_type' => 'App\Models\AgentTask',
+                'context' => ['error' => $e->getMessage()],
+            ]);
+            
+            return response()->json([
+                'error' => 'Failed to execute task'
+            ], 500);
+        }
+    }
+
+    /**
+     * Get execution logs for a task
+     */
+    public function logs(AgentTask $task)
+    {
+        $limit = $request->query('limit', 100);
+        $logs = $this->taskLogService->getLogs($task->id, $limit);
+        
+        return response()->json([
+            'data' => $logs
+        ]);
+    }
+
+    /**
+     * Update task status via state machine
+     */
+    public function updateStatus(Request $request, AgentTask $task)
+    {
+        $validator = Validator::make($request->all(), [
+            'status' => 'required|in:todo,in-progress,blocked,completed,failed,cancelled',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $newStatus = $validator->validated()['status'];
+        
+        try {
+            // Validate the transition
+            $this->taskManagementService->validateStatusTransition($task->status, $newStatus);
+            
+            // Update the task
+            $task->update(['status' => $newStatus]);
+            
+            $this->logService->info('Task status updated via state machine', [
+                'channel' => 'task',
+                'type' => 'status_update',
+                'related_id' => $task->id,
+                'related_type' => 'App\Models\AgentTask',
+                'user_id' => $request->user()?->id,
+                'context' => [
+                    'from_status' => $task->getOriginal('status'),
+                    'to_status' => $newStatus
+                ],
+            ]);
+            
+            return response()->json([
+                'data' => $task->refresh(),
+                'message' => 'Task status updated successfully'
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'error' => $e->getMessage()
+            ], 422);
+        } catch (\Throwable $e) {
+            $this->logService->error('Error updating task status', [
+                'channel' => 'task',
+                'type' => 'status_update_error',
+                'related_id' => $task->id,
+                'related_type' => 'App\Models\AgentTask',
+                'context' => ['error' => $e->getMessage()],
+            ]);
+            
+            return response()->json([
+                'error' => 'Failed to update task status'
+            ], 500);
+        }
+    }
+
+    /**
+     * Create a manual task
+     */
+    public function createManual(Request $request)
+    {
+        try {
+            $data = $request->all();
+            $data['type'] = 'manual';
+            
+            $task = $this->taskManagementService->create($data, $request->user()?->id);
+            
+            return response()->json([
+                'data' => $task,
+                'message' => 'Manual task created successfully'
+            ], 201);
+        } catch (ValidationException $e) {
+            return response()->json(['errors' => $e->errors()], 422);
+        } catch (\Throwable $e) {
+            $this->logService->error('Error creating manual task', [
+                'channel' => 'task',
+                'type' => 'create_manual_error',
+                'context' => ['error' => $e->getMessage()],
+            ]);
+            
+            return response()->json([
+                'error' => 'Failed to create manual task'
+            ], 500);
+        }
+    }
+
+    /**
+     * Create an agentic task (auto-execute)
+     */
+    public function createAgent(Request $request)
+    {
+        try {
+            $data = $request->all();
+            $data['type'] = 'agent';
+            
+            $task = $this->taskManagementService->create($data, $request->user()?->id);
+            
+            // Agent tasks are queued for execution automatically
+            $this->taskExecutionService->execute($task);
+            
+            return response()->json([
+                'data' => $task,
+                'message' => 'Agentic task created and queued for execution'
+            ], 201);
+        } catch (ValidationException $e) {
+            return response()->json(['errors' => $e->errors()], 422);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'error' => $e->getMessage()
+            ], 422);
+        } catch (\Throwable $e) {
+            $this->logService->error('Error creating agentic task', [
+                'channel' => 'task',
+                'type' => 'create_agent_error',
+                'context' => ['error' => $e->getMessage()],
+            ]);
+            
+            return response()->json([
+                'error' => 'Failed to create agentic task'
+            ], 500);
+        }
+    }
+
+    /**
+     * Create a system task (auto-execute)
+     */
+    public function createSystem(Request $request)
+    {
+        try {
+            $data = $request->all();
+            $data['type'] = 'system';
+            
+            $task = $this->taskManagementService->create($data, $request->user()?->id);
+            
+            // System tasks start execution immediately
+            $this->taskExecutionService->executeNow($task);
+            
+            return response()->json([
+                'data' => $task,
+                'message' => 'System task created and executed'
+            ], 201);
+        } catch (ValidationException $e) {
+            return response()->json(['errors' => $e->errors()], 422);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'error' => $e->getMessage()
+            ], 422);
+        } catch (\Throwable $e) {
+            $this->logService->error('Error creating system task', [
+                'channel' => 'task',
+                'type' => 'create_system_error',
+                'context' => ['error' => $e->getMessage()],
+            ]);
+            
+            return response()->json([
+                'error' => 'Failed to create system task'
+            ], 500);
+        }
+    }
+
+    /**
+     * Get tasks by type
+     */
+    public function getByType(string $type)
+    {
+        // Validate task type
+        if (!in_array($type, ['manual', 'agent', 'system'], true)) {
+            return response()->json([
+                'error' => 'Invalid task type'
+            ], 422);
+        }
+        
+        $tasks = $this->taskManagementService->getByType($type);
+        
+        return response()->json([
+            'data' => $tasks
+        ]);
+    }
+
+    /**
+     * Get task statistics by type
+     */
+    public function getStatsByType()
+    {
+        $stats = $this->taskManagementService->getStatsByType();
+        
+        return response()->json([
+            'data' => $stats
+        ]);
     }
 }

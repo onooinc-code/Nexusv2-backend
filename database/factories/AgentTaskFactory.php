@@ -22,7 +22,7 @@ class AgentTaskFactory extends Factory
             'status' => fake()->randomElement(['pending', 'running', 'paused', 'completed', 'failed', 'cancelled']),
             'priority' => fake()->numberBetween(10, 100),
             'progress' => fake()->numberBetween(0, 100),
-            'due_at' => now()->addDays(fake()->numberBetween(1, 14)),
+            'due_date' => now()->addDays(fake()->numberBetween(1, 14)),
             'metadata' => ['task_type' => 'workflow'],
         ];
     }

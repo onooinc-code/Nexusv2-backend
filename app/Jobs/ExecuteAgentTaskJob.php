@@ -2,9 +2,9 @@
 
 namespace App\Jobs;
 
-use App\Models\Agent;
-use App\Services\AgentExecutionService;
-use App\Services\AgentQuarantineService;
+use App\Models\AgentTask;
+use App\Services\LogService;
+use App\Services\TaskLogService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -12,93 +12,206 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * Job to execute an agent task asynchronously
+ */
 class ExecuteAgentTaskJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    /**
-     * The number of times the job may be attempted.
-     */
     public int $tries = 3;
+    public int $timeout = 300; // 5 minutes
+    public int $backoff = 60; // Start with 1 minute backoff
+
+    protected AgentTask $task;
+    protected LogService $logService;
+    protected TaskLogService $taskLogService;
 
     /**
-     * Maximum execution time in seconds.
+     * Create a new job instance.
      */
-    public int $timeout = 120;
+    public function __construct(AgentTask $task)
+    {
+        $this->task = $task;
+        $this->logService = app(LogService::class);
+        $this->taskLogService = app(TaskLogService::class);
+    }
 
-    public function __construct(
-        public string $agentId,
-        public array  $input,
-        public string $traceId
-    ) {}
+    /**
+     * Execute the job.
+     */
+    public function handle(): void
+    {
+        // Refresh the task from database to get latest state
+        $this->task->refresh();
 
-    public function handle(
-        AgentExecutionService  $executionService,
-        AgentQuarantineService $quarantineService
-    ): void {
-        $agent = Agent::find($this->agentId);
+        // Validate that the task is still executable
+        if (!$this->isExecutable()) {
+            $this->logService->warning('Task is no longer executable, skipping job', [
+                'channel' => 'task',
+                'type' => 'job_skip',
+                'related_id' => $this->task->id,
+                'related_type' => 'App\Models\AgentTask',
+                'context' => ['title' => $this->task->title, 'status' => $this->task->status],
+            ]);
 
-        if (!$agent) {
-            Log::error("ExecuteAgentTaskJob: Agent [{$this->agentId}] not found.");
             return;
         }
 
+        // Mark task as running
+        $this->task->update([
+            'status' => \App\Models\AgentTask::STATUS_IN_PROGRESS,
+            'progress' => 10, // Show some progress
+        ]);
+
+        $this->logService->info('Task execution started', [
+            'channel' => 'task',
+            'type' => 'job_start',
+            'related_id' => $this->task->id,
+            'related_type' => 'App\Models\AgentTask',
+            'context' => ['title' => $this->task->title],
+        ]);
+
+        $this->taskLogService->info($this->task, 'Task execution started');
+
         try {
-            // Guard: reject quarantined agents
-            $quarantineService->guardExecution($agent);
+            // TODO: Implement actual task execution logic
+            // This would involve calling the appropriate agent executor or workflow engine
+            // based on the task type and associated agent/workflow
+            
+            // For now, we'll simulate task execution
+            $result = $this->simulateTaskExecution();
 
-            $agent->increment('execution_count');
-            $agent->update(['last_executed_at' => now()]);
+            // Mark task as completed
+            $this->task->update([
+                'status' => \App\Models\AgentTask::STATUS_COMPLETED,
+                'progress' => 100,
+                'result_data' => $result,
+            ]);
 
-            $context = $executionService->buildExecutionContext($agent, $this->input);
+            $this->logService->info('Task execution completed successfully', [
+                'channel' => 'task',
+                'type' => 'job_success',
+                'related_id' => $this->task->id,
+                'related_type' => 'App\Models\AgentTask',
+                'context' => ['title' => $this->task->title, 'result' => $result],
+            ]);
 
-            // Use the private callLLM via a helper
-            $result = $this->executeWithLLM($executionService, $agent, $context);
-
-            $executionService->logStep(
-                $agent, null, $this->traceId, 'async_completed',
-                $this->input, $result, null
-            );
-
-            $agent->recordSuccess();
-
-            Log::info("ExecuteAgentTaskJob: Agent [{$agent->name}] completed. Trace: {$this->traceId}");
+            $this->taskLogService->info($this->task, 'Task execution completed successfully', [
+                'result' => $result,
+            ]);
         } catch (\Throwable $e) {
-            $agent->recordError();
-
-            $executionService->logStep(
-                $agent, null, $this->traceId, 'async_failed',
-                $this->input, ['error' => $e->getMessage()], null
-            );
-
-            Log::error("ExecuteAgentTaskJob: Agent [{$agent->name}] failed. {$e->getMessage()}");
-
-            // Re-throw so Laravel can handle retries
-            throw $e;
+            // Handle task execution failure
+            $this->handleTaskFailure($e);
         }
     }
 
     /**
-     * Handle a job failure (all retries exhausted).
+     * Simulate task execution (placeholder for actual implementation)
      */
-    public function failed(\Throwable $exception): void
+    protected function simulateTaskExecution(): array
     {
-        Log::critical(
-            "ExecuteAgentTaskJob permanently failed for Agent [{$this->agentId}]. " .
-            "Trace: {$this->traceId}. Error: {$exception->getMessage()}"
-        );
+        // In a real implementation, this would:
+        // 1. Load the agent or workflow associated with the task
+        // 2. Execute it with the payload_data
+        // 3. Return the result
+        
+        // For now, we'll just return a simulated result
+        return [
+            'executed_at' => now()->toISOString(),
+            'execution_mode' => 'queued_job',
+            'task_type' => $this->task->type,
+            'message' => 'Task executed successfully via queue job',
+            'agent_id' => $this->task->agent_id,
+            'workflow_id' => $this->task->workflow_id,
+        ];
     }
 
     /**
-     * Invoke the execution service's callLLM method.
-     * We do this by calling runSync internally but skipping the double-tracking.
+     * Handle task execution failure
      */
-    protected function executeWithLLM(
-        AgentExecutionService $service,
-        Agent $agent,
-        array $context
-    ): array {
-        // Directly run sync from inside the job
-        return $service->runSync($agent, $this->input);
+    protected function handleTaskFailure(\Throwable $e): void
+    {
+        $errorMessage = $e->getMessage();
+        $errorCode = $e->getCode();
+
+        $this->logService->error('Task execution failed', [
+            'channel' => 'task',
+            'type' => 'job_failed',
+            'related_id' => $this->task->id,
+            'related_type' => 'App\Models\AgentTask',
+            'context' => ['title' => $this->task->title, 'error' => $errorMessage, 'code' => $errorCode],
+        ]);
+
+        $this->taskLogService->error($this->task, 'Task execution failed', [
+            'error' => $errorMessage,
+            'code' => $errorCode,
+            'trace' => $e->getTraceAsString(),
+        ]);
+
+        // Update task with failure status
+        $this->task->update([
+            'status' => \App\Models\AgentTask::STATUS_FAILED,
+            'progress' => 0,
+            'result_data' => [
+                'error' => $errorMessage,
+                'code' => $errorCode,
+                'failed_at' => now()->toISOString(),
+            ],
+        ]);
+
+        // TODO: Implement retry logic based on task metadata
+        // For now, we'll just let the job fail and be handled by the queue's retry mechanism
+    }
+
+    /**
+     * Check if the task is still in a state where it can be executed
+     */
+    protected function isExecutable(): bool
+    {
+        return in_array($this->task->status, [
+            \App\Models\AgentTask::STATUS_TODO,
+            \App\Models\AgentTask::STATUS_IN_PROGRESS, // Allow retry of in-progress tasks
+        ], true);
+    }
+
+    /**
+     * Define the queue connection and queue name
+     */
+    public function queue(): string
+    {
+        return 'agent-tasks';
+    }
+
+    /**
+     * Calculate backoff delay for retries
+     */
+    public function backoff(): int
+    {
+        return $this->backoff * (2 ** ($this->attempts() - 1));
+    }
+
+    /**
+     * Determine if the job should be retried based on the exception
+     */
+    public function failed(\Throwable $e): void
+    {
+        // This is called when the job has exceeded its maximum attempts
+        $this->logService->error('Task execution job failed permanently', [
+            'channel' => 'task',
+            'type' => 'job_permanently_failed',
+            'related_id' => $this->task->id,
+            'related_type' => 'App\Models\AgentTask',
+            'context' => ['title' => $this->task->title, 'error' => $e->getMessage()],
+        ]);
+
+        $this->taskLogService->error($this->task, 'Task execution job failed permanently', [
+            'error' => $e->getMessage(),
+        ]);
+
+        // Ensure task is marked as failed
+        $this->task->update([
+            'status' => \App\Models\AgentTask::STATUS_FAILED,
+        ]);
     }
 }

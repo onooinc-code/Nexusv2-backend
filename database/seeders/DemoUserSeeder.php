@@ -15,7 +15,7 @@ class DemoUserSeeder extends Seeder
     public function run(): void
     {
         // Create demo admin user
-        User::firstOrCreate(
+        User::updateOrCreate(
             ['email' => 'admin@nexus.local'],
             [
                 'name' => 'Admin',
@@ -24,7 +24,7 @@ class DemoUserSeeder extends Seeder
         );
 
         // Create demo user
-        User::firstOrCreate(
+        User::updateOrCreate(
             ['email' => 'demo@nexus.local'],
             [
                 'name' => 'Demo User',
@@ -33,7 +33,7 @@ class DemoUserSeeder extends Seeder
         );
 
         // Create test user
-        User::firstOrCreate(
+        User::updateOrCreate(
             ['email' => 'test@nexus.local'],
             [
                 'name' => 'Test User',

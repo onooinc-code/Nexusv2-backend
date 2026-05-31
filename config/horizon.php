@@ -101,6 +101,7 @@ return [
         'redis:critical' => 10,
         'redis:llm-inference' => 120,
         'redis:batch' => 300,
+        'redis:agent-tasks' => 60, // Add agent-tasks queue wait threshold
     ],
 
     /*
@@ -252,6 +253,20 @@ return [
             'timeout' => 1800,
             'nice' => 10,
         ],
+        // Add supervisor for agent-tasks queue
+        'agent-tasks-supervisor' => [
+            'connection' => 'redis',
+            'queue' => ['agent-tasks'],
+            'balance' => 'auto',
+            'autoScalingStrategy' => 'time',
+            'maxProcesses' => 3,
+            'maxTime' => 60,
+            'maxJobs' => 0,
+            'memory' => 256,
+            'tries' => 1,
+            'timeout' => 60,
+            'nice' => 0,
+        ],
     ],
 
     'environments' => [
@@ -276,6 +291,11 @@ return [
                 'balanceMaxShift' => 1,
                 'balanceCooldown' => 10,
             ],
+            'agent-tasks-supervisor' => [
+                'maxProcesses' => 3,
+                'balanceMaxShift' => 2,
+                'balanceCooldown' => 3,
+            ],
         ],
 
         'local' => [
@@ -289,6 +309,9 @@ return [
                 'maxProcesses' => 1,
             ],
             'batch-supervisor' => [
+                'maxProcesses' => 1,
+            ],
+            'agent-tasks-supervisor' => [
                 'maxProcesses' => 1,
             ],
         ],

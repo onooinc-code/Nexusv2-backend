@@ -32,7 +32,7 @@ class ContactIdentifierController extends Controller
         $data = $request->validate([
             'type' => ['required', Rule::in(ContactIdentifier::TYPES)],
             'value' => ['required', 'string', 'max:255'],
-            'trusted' => ['nullable', 'boolean'],
+            'is_primary' => ['nullable', 'boolean'],
         ]);
 
         $data['value'] = ContactIdentifier::normalize($data['type'], $data['value']);
@@ -69,7 +69,7 @@ class ContactIdentifierController extends Controller
         $data = $request->validate([
             'type' => ['sometimes', Rule::in(ContactIdentifier::TYPES)],
             'value' => ['sometimes', 'string', 'max:255'],
-            'trusted' => ['nullable', 'boolean'],
+            'is_primary' => ['nullable', 'boolean'],
         ]);
 
         if (isset($data['value'])) {

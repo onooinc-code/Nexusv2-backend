@@ -19,7 +19,7 @@ class ContactAliasController extends Controller
      */
     public function index(Contact $contact)
     {
-        $aliases = $contact->aliases()->orderBy('alias_name')->get();
+        $aliases = $contact->aliases()->orderBy('name')->get();
         return response()->json(['data' => $aliases]);
     }
 
@@ -29,12 +29,8 @@ class ContactAliasController extends Controller
     public function store(Request $request, Contact $contact)
     {
         $data = $request->validate([
-            'alias_name' => ['required', 'string', 'max:255'],
-            'confidence' => ['nullable', 'numeric', 'min:0', 'max:1'],
-            'created_context' => ['nullable', 'string'],
+            'name' => ['required', 'string', 'max:255'],
         ]);
-
-        $data['confidence'] = $data['confidence'] ?? 1.0;
 
         $alias = $contact->aliases()->create($data);
 
@@ -66,9 +62,7 @@ class ContactAliasController extends Controller
         $alias = $contact->aliases()->findOrFail($aliasId);
 
         $data = $request->validate([
-            'alias_name' => ['sometimes', 'string', 'max:255'],
-            'confidence' => ['nullable', 'numeric', 'min:0', 'max:1'],
-            'created_context' => ['nullable', 'string'],
+            'name' => ['sometimes', 'string', 'max:255'],
         ]);
 
         $alias->update($data);

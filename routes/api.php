@@ -2,7 +2,6 @@
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
 /**
  * API Routes for Nexus Platform
@@ -65,18 +64,96 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api']], function () {
 });
 
 // Protected routes (authentication required via Sanctum)
-Route::group(['prefix' => 'v1', 'middleware' => ['api', EnsureFrontendRequestsAreStateful::class, 'auth:sanctum']], function () {
+Route::group(['prefix' => 'v1', 'middleware' => ['api', 'auth:sanctum']], function () {
     // Authentication actions
     Route::post('/logout', [\App\Http\Controllers\AuthController::class, 'logout'])
         ->name('logout');
 
     /**
      * Contacts Hub Routes
+     * Phase 2 — Stats & Reply Mode (must be defined BEFORE resource/wildcard routes)
      */
+    Route::get('/contacts/stats', [\App\Http\Controllers\ContactStatsController::class, 'stats'])
+        ->name('contacts.stats');
+    Route::get('/contacts/reply-mode', [\App\Http\Controllers\ContactStatsController::class, 'getGlobalReplyMode'])
+        ->name('contacts.reply-mode.global.get');
+    Route::patch('/contacts/reply-mode', [\App\Http\Controllers\ContactStatsController::class, 'setGlobalReplyMode'])
+        ->name('contacts.reply-mode.global.set');
+
+    // Standard single-contact action routes (before resource to avoid conflicts)
     Route::post('/contacts/import', [\App\Http\Controllers\ContactController::class, 'import'])
         ->name('contacts.import');
+    Route::post('/contacts/import/preview', [\App\Http\Controllers\ContactImportController::class, 'preview'])
+        ->name('contacts.import.preview');
+    Route::post('/contacts/import/whatsapp', [\App\Http\Controllers\ContactImportController::class, 'importWhatsApp'])
+        ->name('contacts.import.whatsapp');
+    Route::post('/contacts/import/facebook', [\App\Http\Controllers\ContactImportController::class, 'importFacebook'])
+        ->name('contacts.import.facebook');
+    Route::get('/contacts/imports', [\App\Http\Controllers\ContactImportController::class, 'listBatches'])
+        ->name('contacts.imports.index');
+    Route::get('/contacts/imports/{batch}', [\App\Http\Controllers\ContactImportController::class, 'showBatch'])
+        ->name('contacts.imports.show');
+    Route::post('/contacts/imports/{batch}/rollback', [\App\Http\Controllers\ContactImportController::class, 'rollbackBatch'])
+        ->name('contacts.imports.rollback');
+
+    // ContactHub vNext message, intelligence, maintenance, and privacy routes.
+    Route::post('/contacts/analysis-runs/batch', [\App\Http\Controllers\ContactController::class, 'batchAnalysisRun'])
+        ->name('contacts.analysis-runs.batch');
+    Route::post('/contacts/analysis-runs/{run}/apply', [\App\Http\Controllers\ContactController::class, 'applyAnalysisRun'])
+        ->name('contacts.analysis-runs.apply');
+    Route::post('/contacts/analysis-runs/{run}/rollback', [\App\Http\Controllers\ContactController::class, 'rollbackAnalysisRun'])
+        ->name('contacts.analysis-runs.rollback');
+    Route::post('/contacts/memory-maintenance', [\App\Http\Controllers\ContactController::class, 'memoryMaintenance'])
+        ->name('contacts.memory-maintenance.store');
+    Route::get('/contacts/memory-maintenance/runs', [\App\Http\Controllers\ContactController::class, 'memoryMaintenanceRuns'])
+        ->name('contacts.memory-maintenance.runs');
+    Route::get('/contacts/memory-maintenance/runs/{run}', [\App\Http\Controllers\ContactController::class, 'showMemoryMaintenanceRun'])
+        ->name('contacts.memory-maintenance.runs.show');
+
     Route::get('/contacts/export', [\App\Http\Controllers\ContactController::class, 'export'])
         ->name('contacts.export');
+    Route::get('/contacts/{id}/messages', [\App\Http\Controllers\ContactController::class, 'messages'])
+        ->name('contacts.messages');
+    Route::get('/contacts/{id}/messages/whatsapp', [\App\Http\Controllers\ContactController::class, 'whatsappMessages'])
+        ->name('contacts.messages.whatsapp');
+    Route::get('/contacts/{id}/messages/facebook', [\App\Http\Controllers\ContactController::class, 'facebookMessages'])
+        ->name('contacts.messages.facebook');
+    Route::get('/contacts/{id}/threads', [\App\Http\Controllers\ContactController::class, 'threads'])
+        ->name('contacts.threads');
+    Route::get('/contacts/{id}/threads/{thread}', [\App\Http\Controllers\ContactController::class, 'showThread'])
+        ->name('contacts.threads.show');
+    Route::post('/contacts/{id}/analysis-runs', [\App\Http\Controllers\ContactController::class, 'createAnalysisRun'])
+        ->name('contacts.analysis-runs.store');
+    Route::get('/contacts/{id}/analysis-runs', [\App\Http\Controllers\ContactController::class, 'listAnalysisRuns'])
+        ->name('contacts.analysis-runs.index');
+    Route::get('/contacts/{id}/analysis-runs/{run}', [\App\Http\Controllers\ContactController::class, 'showAnalysisRun'])
+        ->name('contacts.analysis-runs.show');
+    Route::post('/contacts/{id}/memory-maintenance', [\App\Http\Controllers\ContactController::class, 'memoryMaintenance'])
+        ->name('contacts.memory-maintenance.contact.store');
+    Route::get('/contacts/{id}/intelligence', [\App\Http\Controllers\ContactController::class, 'intelligence'])
+        ->name('contacts.intelligence');
+    Route::get('/contacts/{id}/persona', [\App\Http\Controllers\ContactController::class, 'persona'])
+        ->name('contacts.persona');
+    Route::get('/contacts/{id}/talk-specs', [\App\Http\Controllers\ContactController::class, 'talkSpecs'])
+        ->name('contacts.talk-specs');
+    Route::get('/contacts/{id}/emotional-baseline', [\App\Http\Controllers\ContactController::class, 'emotionalBaseline'])
+        ->name('contacts.emotional-baseline');
+    Route::get('/contacts/{id}/topics', [\App\Http\Controllers\ContactController::class, 'topics'])
+        ->name('contacts.topics');
+    Route::get('/contacts/{id}/reply-rules', [\App\Http\Controllers\ContactController::class, 'listReplyRules'])
+        ->name('contacts.reply-rules.index');
+    Route::post('/contacts/{id}/reply-rules', [\App\Http\Controllers\ContactController::class, 'storeReplyRule'])
+        ->name('contacts.reply-rules.store');
+    Route::patch('/contacts/{id}/reply-rules/{rule}', [\App\Http\Controllers\ContactController::class, 'updateReplyRule'])
+        ->name('contacts.reply-rules.update');
+    Route::delete('/contacts/{id}/reply-rules/{rule}', [\App\Http\Controllers\ContactController::class, 'destroyReplyRule'])
+        ->name('contacts.reply-rules.destroy');
+    Route::post('/contacts/{id}/export', [\App\Http\Controllers\ContactController::class, 'exportBundle'])
+        ->name('contacts.export.bundle');
+    Route::post('/contacts/{id}/erase', [\App\Http\Controllers\ContactController::class, 'erase'])
+        ->name('contacts.erase.post');
+    Route::get('/contacts/{id}/audit', [\App\Http\Controllers\ContactController::class, 'audit'])
+        ->name('contacts.audit');
     Route::get('/contacts/{id}/memory', [\App\Http\Controllers\ContactController::class, 'getMemory'])
         ->name('contacts.memory');
     Route::get('/contacts/{id}/rules', [\App\Http\Controllers\ContactController::class, 'getRules'])
@@ -91,7 +168,14 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', EnsureFrontendRequestsAr
         ->name('contacts.erase');
     Route::post('/contacts/{id}/enrich', [\App\Http\Controllers\ContactController::class, 'enrich'])
         ->name('contacts.enrich');
-    Route::resource('contacts', \App\Http\Controllers\ContactController::class);
+
+    // Phase 2 — Per-contact reply mode
+    Route::get('/contacts/{contact}/reply-mode', [\App\Http\Controllers\ContactStatsController::class, 'getContactReplyMode'])
+        ->name('contacts.reply-mode.get');
+    Route::patch('/contacts/{contact}/reply-mode', [\App\Http\Controllers\ContactStatsController::class, 'setContactReplyMode'])
+        ->name('contacts.reply-mode.set');
+
+    Route::apiResource('contacts', \App\Http\Controllers\ContactController::class);
 
     /**
      * Contact Sub-resources Routes
@@ -211,8 +295,14 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', EnsureFrontendRequestsAr
      */
     Route::get('/workflows/templates', [\App\Http\Controllers\WorkflowController::class, 'getTemplates'])
        ->name('workflows.templates');
+    Route::get('/workflows/executions/{execution}', [\App\Http\Controllers\WorkflowController::class, 'showExecution'])
+       ->name('workflows.executions.show');
+    Route::post('/workflows/executions/{execution}/resume', [\App\Http\Controllers\WorkflowController::class, 'resume'])
+       ->name('workflows.executions.resume');
+    Route::post('/workflows/executions/{execution}/cancel', [\App\Http\Controllers\WorkflowController::class, 'cancel'])
+       ->name('workflows.executions.cancel');
 
-    Route::resource('workflows', \App\Http\Controllers\WorkflowController::class);
+    Route::apiResource('workflows', \App\Http\Controllers\WorkflowController::class);
 
     // Workflow action routes on specific resources
     Route::post('/workflows/{id}/execute', [\App\Http\Controllers\WorkflowController::class, 'execute'])
@@ -226,13 +316,33 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', EnsureFrontendRequestsAr
      */
     // Specific action routes (must come before resource)
     Route::get('/tasks/stats', [\App\Http\Controllers\TaskController::class, 'getStats'])
-       ->name('tasks.stats');
+        ->name('tasks.stats');
     Route::get('/tasks/active', [\App\Http\Controllers\TaskController::class, 'getActive'])
-       ->name('tasks.active');
+        ->name('tasks.active');
     Route::get('/tasks/queue-stats', [\App\Http\Controllers\TaskController::class, 'getQueueStats'])
-       ->name('tasks.queue-stats');
+        ->name('tasks.queue-stats');
     Route::get('/tasks/routing-stats', [\App\Http\Controllers\TaskController::class, 'getRoutingStats'])
-       ->name('tasks.routing-stats');
+        ->name('tasks.routing-stats');
+
+    // New TaskHub specific endpoints (must come before resource)
+    Route::post('/tasks/{id}/execute', [\App\Http\Controllers\TaskController::class, 'execute'])
+        ->name('tasks.execute');
+    Route::get('/tasks/{id}/logs', [\App\Http\Controllers\TaskController::class, 'logs'])
+        ->name('tasks.logs');
+    Route::patch('/tasks/{id}/status', [\App\Http\Controllers\TaskController::class, 'updateStatus'])
+        ->name('tasks.update-status');
+
+    // Type-specific task creation endpoints
+    Route::post('/tasks/manual', [\App\Http\Controllers\TaskController::class, 'createManual'])
+        ->name('tasks.create-manual');
+    Route::post('/tasks/agent', [\App\Http\Controllers\TaskController::class, 'createAgent'])
+        ->name('tasks.create-agent');
+    Route::post('/tasks/system', [\App\Http\Controllers\TaskController::class, 'createSystem'])
+        ->name('tasks.create-system');
+    Route::get('/tasks/type/{type}', [\App\Http\Controllers\TaskController::class, 'getByType'])
+        ->name('tasks.by-type');
+    Route::get('/tasks/stats/by-type', [\App\Http\Controllers\TaskController::class, 'getStatsByType'])
+        ->name('tasks.stats-by-type');
 
     // Resource routes
     Route::resource('tasks', \App\Http\Controllers\TaskController::class);
@@ -337,11 +447,11 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', EnsureFrontendRequestsAr
         ->name('ai.intents.routing.update');
     Route::post('/ai/request', [\App\Http\Controllers\AiRequestController::class, 'handleRequest'])
         ->name('ai.request.handle');
-    
+
     // Core routing execution endpoint
     Route::post('/ai-models/route', [\App\Http\Controllers\AiRouteController::class, 'route'])
         ->name('ai-models.route');
-        
+
     // Cost Analytics & Budget Endpoints
     Route::get('/ai/cost/forecast', [\App\Http\Controllers\AiCostAnalyticsController::class, 'forecast'])
         ->name('ai.cost.forecast');
@@ -369,15 +479,15 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', EnsureFrontendRequestsAr
              ->name('settings.public');
        Route::put('/bulk', [\App\Http\Controllers\SettingController::class, 'bulkUpdate'])
              ->name('settings.bulk-update');
-       
+
        // Emergency control routes (super-admin only)
        Route::post('/system/agent-pause', [\App\Http\Controllers\SettingController::class, 'toggleGlobalAgentPause'])
              ->middleware('can:toggleEmergency,App\Models\Setting')
              ->name('settings.agent-pause');
-             
+
        Route::post('/system/api-proxy', [\App\Http\Controllers\SettingController::class, 'apiProxy'])
              ->name('settings.api-proxy');
-       
+
        // Seed manager routes (super-admin only)
        Route::get('/seeds', [\App\Http\Controllers\SettingController::class, 'listSeeds'])
              ->middleware('can:runSeeder,App\Models\Setting')
@@ -388,7 +498,7 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', EnsureFrontendRequestsAr
        Route::post('/seeds/run-multiple', [\App\Http\Controllers\SettingController::class, 'runMultipleSeeds'])
              ->middleware('can:runSeeder,App\Models\Setting')
              ->name('settings.seeds.run-multiple');
-       
+
        // Credential validation and health routes
        Route::post('/credentials/validate', [\App\Http\Controllers\SettingController::class, 'validateCredential'])
              ->name('settings.credentials.validate');
@@ -396,7 +506,7 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', EnsureFrontendRequestsAr
              ->name('settings.credentials.validate_all');
        Route::get('/health', [\App\Http\Controllers\SettingController::class, 'healthStatus'])
              ->name('settings.health');
-       
+
        // Admin dashboard routes (super-admin only)
        Route::group(['prefix' => 'admin', 'middleware' => 'can:create,App\Models\Setting'], function () {
            Route::get('/dashboard', [\App\Http\Controllers\SettingsHubAdminController::class, 'dashboardOverview'])
@@ -412,11 +522,11 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', EnsureFrontendRequestsAr
            Route::post('/export', [\App\Http\Controllers\SettingsHubAdminController::class, 'exportSettings'])
                  ->name('settings.admin.export');
        });
-       
+
        // Credential masking route
        Route::get('/{key}/masked', [\App\Http\Controllers\SettingController::class, 'getMaskedCredential'])
              ->name('settings.masked');
-       
+
        // Standard CRUD routes
        Route::get('/{key}', [\App\Http\Controllers\SettingController::class, 'show'])
              ->name('settings.show');

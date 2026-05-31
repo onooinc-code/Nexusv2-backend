@@ -33,10 +33,15 @@ class Contact extends BaseModel
         'uuid',
         'user_id',
         'phone',
+        'whatsapp_number',
         'name',
+        'display_name',
+        'alternate_name',
         'canonical_name',
         'email',
+        'primary_identifier',
         'type',
+        'gender',
         'title',
         'company',
         'avatar_url',
@@ -44,6 +49,10 @@ class Contact extends BaseModel
         'attributes',
         'is_active',
         'last_seen_at',
+        'last_interaction_at',
+        'reply_mode_override',
+        'profile_confidence',
+        'memory_freshness',
     ];
 
     protected $casts = [
@@ -51,6 +60,9 @@ class Contact extends BaseModel
         'attributes' => 'json',
         'is_active' => 'boolean',
         'last_seen_at' => 'datetime',
+        'last_interaction_at' => 'datetime',
+        'memory_freshness' => 'datetime',
+        'profile_confidence' => 'integer',
     ];
 
     public function conversations(): HasMany
@@ -70,7 +82,12 @@ class Contact extends BaseModel
 
     public function rules(): HasMany
     {
-        return $this->hasMany(ContactRule::class);
+        return $this->hasMany(ContactReplyRule::class);
+    }
+
+    public function replyRules(): HasMany
+    {
+        return $this->hasMany(ContactReplyRule::class);
     }
 
     public function customFields(): HasMany
@@ -90,12 +107,12 @@ class Contact extends BaseModel
 
     public function relationships(): HasMany
     {
-        return $this->hasMany(ContactRelationship::class);
+        return $this->hasMany(ContactRelationship::class, 'source_contact_id');
     }
 
     public function relatedTo(): HasMany
     {
-        return $this->hasMany(ContactRelationship::class, 'related_contact_id');
+        return $this->hasMany(ContactRelationship::class, 'target_contact_id');
     }
 
     public function preferences(): HasMany
@@ -105,12 +122,54 @@ class Contact extends BaseModel
 
     public function aliases(): HasMany
     {
-        return $this->hasMany(ContactAlias::class, 'primary_contact_id');
+        return $this->hasMany(ContactAlias::class, 'contact_id');
     }
 
     public function notificationLogs(): HasMany
     {
         return $this->hasMany(NotificationLog::class);
+    }
+
+    public function channels(): HasMany
+    {
+        return $this->hasMany(ContactChannel::class);
+    }
+
+    public function messageThreads(): HasMany
+    {
+        return $this->hasMany(ContactMessageThread::class);
+    }
+
+    public function messages(): HasMany
+    {
+        return $this->hasMany(ContactMessage::class);
+    }
+
+    public function analysisRuns(): HasMany
+    {
+        return $this->hasMany(ContactAnalysisRun::class);
+    }
+
+    public function analysisFindings(): HasMany
+    {
+        return $this->hasMany(ContactAnalysisFinding::class);
+    }
+
+
+
+    public function topics(): HasMany
+    {
+        return $this->hasMany(ContactTopic::class);
+    }
+
+    public function profileSnapshots(): HasMany
+    {
+        return $this->hasMany(ContactProfileSnapshot::class);
+    }
+
+    public function auditEvents(): HasMany
+    {
+        return $this->hasMany(ContactAuditEvent::class);
     }
 
     public function scopeOfType($query, string $type)

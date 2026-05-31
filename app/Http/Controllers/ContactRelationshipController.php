@@ -21,8 +21,8 @@ class ContactRelationshipController extends Controller
     public function index(Contact $contact)
     {
         $relationships = $contact->relationships()
-            ->with('relatedContact')
-            ->orderBy('relationship_type')
+            ->with('targetContact')
+            ->orderBy('type')
             ->get();
 
         return response()->json(['data' => $relationships]);
@@ -34,16 +34,22 @@ class ContactRelationshipController extends Controller
     public function store(Request $request, Contact $contact)
     {
         $data = $request->validate([
-            'related_contact_id' => ['required', 'exists:contacts,id'],
-            'relationship_type' => ['required', Rule::in(ContactRelationship::TYPES)],
-            'mention_count' => ['nullable', 'integer', 'min:1'],
+            'target_contact_id' => ['required', 'exists:contacts,id'],
+            'type' => ['required', 'string', 'max:255'],
+            'direction' => ['nullable', 'string', 'max:255'],
+            'strength' => ['nullable', 'numeric', 'min:0', 'max:1'],
             'confidence' => ['nullable', 'numeric', 'min:0', 'max:1'],
+            'evidence' => ['nullable', 'string'],
+            'start_date' => ['nullable', 'date'],
+            'end_date' => ['nullable', 'date'],
+            'notes' => ['nullable', 'string'],
         ]);
 
-        $data['mention_count'] = $data['mention_count'] ?? 1;
+        $data['source_contact_id'] = $contact->id;
+        $data['strength'] = $data['strength'] ?? 1.0;
         $data['confidence'] = $data['confidence'] ?? 1.0;
 
-        $relationship = $contact->relationships()->create($data);
+        $relationship = ContactRelationship::create($data);
 
         $this->logService->info('Contact relationship created', [
             'channel' => 'contact',
@@ -53,7 +59,7 @@ class ContactRelationshipController extends Controller
             'user_id' => $request->user()?->id,
         ]);
 
-        return response()->json(['data' => $relationship->load('relatedContact')], 201);
+        return response()->json(['data' => $relationship->load('targetContact')], 201);
     }
 
     /**
@@ -61,8 +67,8 @@ class ContactRelationshipController extends Controller
      */
     public function show(Contact $contact, $relationshipId)
     {
-        $relationship = $contact->relationships()
-            ->with('relatedContact')
+        $relationship = ContactRelationship::with('targetContact')
+            ->where('source_contact_id', $contact->id)
             ->findOrFail($relationshipId);
 
         return response()->json(['data' => $relationship]);
@@ -73,13 +79,19 @@ class ContactRelationshipController extends Controller
      */
     public function update(Request $request, Contact $contact, $relationshipId)
     {
-        $relationship = $contact->relationships()->findOrFail($relationshipId);
+        $relationship = ContactRelationship::where('source_contact_id', $contact->id)
+            ->findOrFail($relationshipId);
 
         $data = $request->validate([
-            'related_contact_id' => ['sometimes', 'exists:contacts,id'],
-            'relationship_type' => ['sometimes', Rule::in(ContactRelationship::TYPES)],
-            'mention_count' => ['nullable', 'integer', 'min:1'],
+            'target_contact_id' => ['sometimes', 'exists:contacts,id'],
+            'type' => ['sometimes', 'string', 'max:255'],
+            'direction' => ['nullable', 'string', 'max:255'],
+            'strength' => ['nullable', 'numeric', 'min:0', 'max:1'],
             'confidence' => ['nullable', 'numeric', 'min:0', 'max:1'],
+            'evidence' => ['nullable', 'string'],
+            'start_date' => ['nullable', 'date'],
+            'end_date' => ['nullable', 'date'],
+            'notes' => ['nullable', 'string'],
         ]);
 
         $relationship->update($data);
@@ -92,7 +104,7 @@ class ContactRelationshipController extends Controller
             'user_id' => $request->user()?->id,
         ]);
 
-        return response()->json(['data' => $relationship->load('relatedContact')]);
+        return response()->json(['data' => $relationship->load('targetContact')]);
     }
 
     /**
@@ -100,7 +112,8 @@ class ContactRelationshipController extends Controller
      */
     public function destroy(Contact $contact, $relationshipId)
     {
-        $relationship = $contact->relationships()->findOrFail($relationshipId);
+        $relationship = ContactRelationship::where('source_contact_id', $contact->id)
+            ->findOrFail($relationshipId);
         $relationship->delete();
 
         $this->logService->info('Contact relationship deleted', [

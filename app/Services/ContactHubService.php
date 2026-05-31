@@ -38,7 +38,6 @@ class ContactHubService
     public function updateBeliefAutoUpdate(Contact $contact): void
     {
         $metadata = $contact->metadata ?? [];
-        $attributes = $contact->attributes ?? [];
 
         if (!empty($metadata['changed_by'])) {
             $contact->metadata = array_merge($metadata, [
@@ -84,17 +83,11 @@ class ContactHubService
             return;
         }
 
-        foreach ($preferences as $preferenceType => $value) {
-            if (!in_array($preferenceType, ContactPreference::TYPES, true)) {
-                continue;
-            }
-
+        foreach ($preferences as $key => $value) {
             $contact->preferences()->updateOrCreate(
-                ['preference_type' => $preferenceType],
+                ['key' => $key],
                 [
                     'value' => is_scalar($value) ? (string) $value : json_encode($value),
-                    'confidence' => 1.0,
-                    'inferred_from_count' => 1,
                 ]
             );
         }
@@ -129,73 +122,90 @@ class ContactHubService
                     ->exists();
 
                 if (!$exists) {
-                    $target->identifiers()->create($identifier->toArray());
+                    $target->identifiers()->create([
+                        'type' => $identifier->type,
+                        'value' => $identifier->value,
+                        'is_primary' => $identifier->is_primary,
+                    ]);
                 }
             }
 
             foreach ($source->relationships as $relationship) {
-                if ($relationship->related_contact_id === $target->id) {
+                if ($relationship->target_contact_id === $target->id) {
                     continue;
                 }
 
                 $existing = $target->relationships()
-                    ->where('related_contact_id', $relationship->related_contact_id)
-                    ->where('relationship_type', $relationship->relationship_type)
+                    ->where('target_contact_id', $relationship->target_contact_id)
+                    ->where('type', $relationship->type)
                     ->first();
 
                 if ($existing) {
                     $existing->update([
-                        'mention_count' => max($existing->mention_count, $relationship->mention_count),
+                        'strength' => max($existing->strength, $relationship->strength),
                         'confidence' => max($existing->confidence, $relationship->confidence),
                     ]);
                 } else {
-                    $target->relationships()->create($relationship->toArray());
+                    $target->relationships()->create([
+                        'target_contact_id' => $relationship->target_contact_id,
+                        'type' => $relationship->type,
+                        'direction' => $relationship->direction,
+                        'strength' => $relationship->strength,
+                        'confidence' => $relationship->confidence,
+                        'evidence' => $relationship->evidence,
+                        'start_date' => $relationship->start_date,
+                        'end_date' => $relationship->end_date,
+                        'notes' => $relationship->notes,
+                    ]);
                 }
             }
 
-            ContactRelationship::where('related_contact_id', $source->id)->get()->each(function (ContactRelationship $reverseRelationship) use ($target) {
-                if ($reverseRelationship->contact_id === $target->id) {
+            ContactRelationship::where('target_contact_id', $source->id)->get()->each(function (ContactRelationship $reverseRelationship) use ($target) {
+                if ($reverseRelationship->source_contact_id === $target->id) {
                     return;
                 }
 
-                $existing = ContactRelationship::where('contact_id', $reverseRelationship->contact_id)
-                    ->where('related_contact_id', $target->id)
-                    ->where('relationship_type', $reverseRelationship->relationship_type)
+                $existing = ContactRelationship::where('source_contact_id', $reverseRelationship->source_contact_id)
+                    ->where('target_contact_id', $target->id)
+                    ->where('type', $reverseRelationship->type)
                     ->first();
 
                 if ($existing) {
                     $existing->update([
-                        'mention_count' => max($existing->mention_count, $reverseRelationship->mention_count),
+                        'strength' => max($existing->strength, $reverseRelationship->strength),
                         'confidence' => max($existing->confidence, $reverseRelationship->confidence),
                     ]);
                     $reverseRelationship->delete();
                 } else {
-                    $reverseRelationship->related_contact_id = $target->id;
+                    $reverseRelationship->target_contact_id = $target->id;
                     $reverseRelationship->save();
                 }
             });
 
             foreach ($source->preferences as $preference) {
-                $existing = $target->preferences()->where('preference_type', $preference->preference_type)->first();
+                $existing = $target->preferences()->where('key', $preference->key)->first();
                 if ($existing) {
                     $existing->update([
                         'value' => $existing->value ?: $preference->value,
-                        'confidence' => max($existing->confidence, $preference->confidence),
-                        'inferred_from_count' => max($existing->inferred_from_count, $preference->inferred_from_count),
                     ]);
                 } else {
-                    $target->preferences()->create($preference->toArray());
+                    $target->preferences()->create([
+                        'key' => $preference->key,
+                        'value' => $preference->value,
+                    ]);
                 }
             }
 
             foreach ($source->aliases as $alias) {
-                $exists = $target->aliases()->where('alias_name', $alias->alias_name)->exists();
+                $exists = $target->aliases()->where('name', $alias->name)->exists();
                 if (!$exists) {
-                    $target->aliases()->create($alias->toArray());
+                    $target->aliases()->create([
+                        'name' => $alias->name,
+                    ]);
                 }
             }
 
-            foreach (['notes', 'memories', 'tags', 'rules', 'customFields', 'conversations'] as $relation) {
+            foreach (['notes', 'memories', 'tags', 'replyRules', 'customFields', 'conversations'] as $relation) {
                 if (method_exists($source, $relation)) {
                     $source->{$relation}()->get()->each(function ($item) use ($target) {
                         $item->contact_id = $target->id;
@@ -231,13 +241,13 @@ class ContactHubService
         DB::transaction(function () use ($contact) {
             $contact->identifiers()->delete();
             $contact->relationships()->delete();
-            ContactRelationship::where('related_contact_id', $contact->id)->delete();
+            ContactRelationship::where('target_contact_id', $contact->id)->delete();
             $contact->preferences()->delete();
             $contact->aliases()->delete();
             $contact->notes()->delete();
             $contact->memories()->delete();
             $contact->tags()->delete();
-            $contact->rules()->delete();
+            $contact->replyRules()->delete();
             $contact->customFields()->delete();
             $contact->conversations()->delete();
             $contact->notificationLogs()->delete();
@@ -293,16 +303,16 @@ class ContactHubService
             ['id' => $contact->id, 'label' => $contact->name],
         ];
 
-        $relationships = $contact->relationships()->with('relatedContact')->get();
+        $relationships = $contact->relationships()->with('targetContact')->get();
 
         foreach ($relationships as $relationship) {
-            $related = $relationship->relatedContact;
+            $related = $relationship->targetContact;
             if ($related) {
                 $nodes[] = ['id' => $related->id, 'label' => $related->name];
                 $connections[] = [
                     'source' => $contact->id,
                     'target' => $related->id,
-                    'relationship' => $relationship->relationship_type,
+                    'relationship' => $relationship->type,
                     'confidence' => $relationship->confidence,
                 ];
             }
@@ -319,7 +329,6 @@ class ContactHubService
     {
         $notes = $contact->notes()->pluck('note')->toArray();
 
-        // Aggregate sentiment score across all notes: +1 for positive, -1 for negative
         $score = 0;
         foreach ($notes as $note) {
             $lower = strtolower($note);
@@ -348,7 +357,6 @@ class ContactHubService
 
     public function getContactAnalytics(Contact $contact): array
     {
-        // Default to 7-day time-series
         return $this->getContactAnalyticsWithOptions($contact, 7);
     }
 
@@ -374,7 +382,6 @@ class ContactHubService
                     'count' => $contact->memories()->whereBetween('created_at', [$from, $to])->count(),
                 ];
 
-                // Count messages for this contact in the date range by querying Message model to avoid collection pitfalls
                 $messagesCount = Message::whereHas('conversation', function ($q) use ($contact) {
                     $q->where('contact_id', $contact->id);
                 })->whereBetween('sent_at', [$from, $to])->count();
@@ -395,7 +402,7 @@ class ContactHubService
                 'last_seen_at' => optional($contact->last_seen_at)->toDateTimeString(),
                 'memory_count' => $contact->memories()->count(),
                 'tag_count' => $contact->tags()->count(),
-                'rule_count' => $contact->rules()->count(),
+                'rule_count' => $contact->replyRules()->count(),
                 'baseline' => $contact->metadata['emotional_baseline'] ?? 'neutral',
                 'time_series' => [
                     'memories' => $memoriesSeries,

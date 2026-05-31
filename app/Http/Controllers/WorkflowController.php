@@ -2,77 +2,73 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ExecuteWorkflowRequest;
+use App\Http\Requests\ResumeWorkflowExecutionRequest;
+use App\Http\Requests\StoreWorkflowRequest;
+use App\Http\Requests\UpdateWorkflowRequest;
+use App\Http\Resources\WorkflowExecutionResource;
+use App\Http\Resources\WorkflowResource;
+use App\Jobs\ExecuteWorkflowJob;
 use App\Models\Workflow;
+use App\Models\WorkflowExecution;
 use App\Services\LogService;
 use App\Services\WorkflowExecutor;
-use App\Services\WorkflowValidationService;
+use App\Services\Workflows\WorkflowInterpreter;
+use App\Services\Workflows\WorkflowPolicyGuard;
+use App\Services\Workflows\WorkflowRegistry;
+use App\Services\Workflows\WorkflowStateManager;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 
 class WorkflowController extends Controller
 {
     public function __construct(
         protected WorkflowExecutor $executor,
-        protected WorkflowValidationService $validator,
+        protected WorkflowRegistry $registry,
+        protected WorkflowStateManager $stateManager,
+        protected WorkflowPolicyGuard $policyGuard,
+        protected WorkflowInterpreter $interpreter,
         protected LogService $logService
     ) {}
 
     public function index(Request $request)
     {
-        $query = Workflow::query();
+        $query = Workflow::query()->withCount('executions');
 
-        if ($request->has('status')) {
-            $query->byStatus($request->status);
+        if ($request->filled('status')) {
+            $query->byStatus($request->string('status'));
         }
 
-        if ($request->has('trigger_type')) {
-            $query->byTriggerType($request->trigger_type);
+        if ($request->filled('trigger_type')) {
+            $query->byTriggerType($request->string('trigger_type'));
         }
 
         if ($request->has('is_active')) {
             $query->where('is_active', $request->boolean('is_active'));
         }
 
-        if ($request->has('search')) {
-            $search = $request->search;
+        if ($request->has('include_system') && ! $request->boolean('include_system')) {
+            $query->where('is_system', false);
+        }
+
+        if ($request->filled('search')) {
+            $search = (string) $request->query('search');
             $query->where(function ($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('description', 'like', "%{$search}%");
+                    ->orWhere('description', 'like', "%{$search}%")
+                    ->orWhere('key', 'like', "%{$search}%");
             });
         }
 
-        $workflows = $query->with(['tasks'])->paginate($request->per_page ?? 20);
+        $perPage = min((int) $request->query('limit', $request->query('per_page', 20)), 100);
+        $workflows = $query->latest()->paginate($perPage);
 
-        return response()->json($workflows);
+        return WorkflowResource::collection($workflows);
     }
 
-    public function store(Request $request)
+    public function store(StoreWorkflowRequest $request)
     {
-        $validator = Validator::make($request->all(), [
-            'name' => 'required|string|max:255',
-            'key' => 'required|string|max:255|unique:workflows,key',
-            'description' => 'nullable|string',
-            'steps' => 'required|array|min:1',
-            'steps.*.name' => 'required|string',
-            'steps.*.action' => 'required|string',
-            'trigger_type' => 'required|string|in:manual,scheduled,event,webhook',
-            'trigger_config' => 'nullable|array',
-            'settings' => 'nullable|array',
-            'metadata' => 'nullable|array',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
-        }
-
-        $workflowData = $validator->validated();
-        $validation = $this->validator->validateWorkflow($workflowData);
-
-        if (!$validation['valid']) {
-            return response()->json(['errors' => $validation['errors']], 422);
-        }
-
-        $workflow = Workflow::create($workflowData);
+        $workflow = $this->registry->create($request->validated(), $request->user());
 
         $this->logService->info('Workflow created', [
             'channel' => 'workflow',
@@ -82,50 +78,26 @@ class WorkflowController extends Controller
             'user_id' => $request->user()?->id,
         ]);
 
-        return response()->json(['data' => $workflow, 'message' => 'Workflow created successfully'], 201);
+        return (new WorkflowResource($workflow))->response()->setStatusCode(201);
     }
 
     public function show(Workflow $workflow)
     {
-        $workflow->load(['tasks']);
+        $workflow->load(['versions' => fn ($query) => $query->latest('version_number'), 'executions' => fn ($query) => $query->latest()->limit(5)]);
 
-        return response()->json([
-            'data' => $workflow,
-            'progress' => $workflow->progress,
-            'total_steps' => $workflow->total_steps,
-            'completed_steps' => $workflow->completed_steps,
-        ]);
+        return new WorkflowResource($workflow);
     }
 
-    public function update(Request $request, Workflow $workflow)
+    public function update(UpdateWorkflowRequest $request, Workflow $workflow)
     {
-        $validator = Validator::make($request->all(), [
-            'name' => 'sometimes|string|max:255',
-            'description' => 'nullable|string',
-            'steps' => 'sometimes|array|min:1',
-            'steps.*.name' => 'required_with:steps|string',
-            'steps.*.action' => 'required_with:steps|string',
-            'trigger_type' => 'sometimes|string|in:manual,scheduled,event,webhook',
-            'trigger_config' => 'nullable|array',
-            'settings' => 'nullable|array',
-            'metadata' => 'nullable|array',
-            'is_active' => 'sometimes|boolean',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+        if ($workflow->is_system && $request->has('steps')) {
+            throw ValidationException::withMessages([
+                'steps' => 'System workflow definitions are immutable. Update schedule, settings, or variables only.',
+            ]);
         }
 
-        $updateData = $validator->validated();
-
-        if (isset($updateData['steps'])) {
-            $stepValidation = $this->validator->validateSteps($updateData['steps']);
-            if (!empty($stepValidation)) {
-                return response()->json(['errors' => $stepValidation], 422);
-            }
-        }
-
-        $workflow->update($updateData);
+        $this->policyGuard->assertCanManage($request->user(), $workflow);
+        $workflow = $this->registry->update($workflow, $request->validated(), $request->user());
 
         $this->logService->info('Workflow updated', [
             'channel' => 'workflow',
@@ -135,12 +107,13 @@ class WorkflowController extends Controller
             'user_id' => $request->user()?->id,
         ]);
 
-        return response()->json(['data' => $workflow, 'message' => 'Workflow updated successfully']);
+        return new WorkflowResource($workflow);
     }
 
     public function destroy(Workflow $workflow)
     {
-        $workflow->update(['is_active' => false]);
+        $this->policyGuard->assertCanDelete($workflow);
+        $workflow->update(['is_active' => false, 'status' => Workflow::STATUS_CANCELLED]);
 
         $this->logService->info('Workflow deactivated', [
             'channel' => 'workflow',
@@ -150,88 +123,94 @@ class WorkflowController extends Controller
             'user_id' => request()->user()?->id,
         ]);
 
-        return response()->json(['message' => 'Workflow deactivated successfully']);
+        return response()->json(['data' => ['id' => $workflow->id], 'message' => 'Workflow deactivated successfully']);
     }
 
-    public function execute(Request $request, Workflow $workflow)
+    public function execute(ExecuteWorkflowRequest $request, Workflow $workflow)
     {
         if ($workflow->isRunning()) {
-            return response()->json(['message' => 'Workflow is already running'], 409);
+            return response()->json([
+                'code' => 'workflow_running',
+                'message' => 'Workflow is already running',
+            ], 409);
         }
 
-        $context = $request->validate([
-            'context' => 'nullable|array',
-        ])['context'] ?? [];
+        $runMode = $request->validated('run_mode') ?? 'async';
+        $result = $this->executor->execute($workflow, $request->inputPayload(), $runMode, $request->user());
 
-        try {
-            $this->logService->info('Workflow execution started', [
-                'channel' => 'workflow',
-                'type' => 'execute',
-                'related_id' => $workflow->id,
-                'related_type' => Workflow::class,
-                'user_id' => $request->user()?->id,
-                'context' => $context,
-            ]);
+        $execution = WorkflowExecution::with('stepLogs')->find($result['execution_id']);
 
-            $result = $this->executor->execute($workflow, $context);
-
-            $this->logService->info('Workflow execution completed', [
-                'channel' => 'workflow',
-                'type' => 'execute',
-                'related_id' => $workflow->id,
-                'related_type' => Workflow::class,
-                'user_id' => $request->user()?->id,
-                'context' => ['status' => $result['status'] ?? 'completed'],
-            ]);
-
-            return response()->json([
-                'message' => 'Workflow execution completed',
-                'data' => $result,
-            ]);
-        } catch (\Throwable $e) {
-            $this->logService->error('Workflow execution failed', [
-                'channel' => 'workflow',
-                'type' => 'execute',
-                'related_id' => $workflow->id,
-                'related_type' => Workflow::class,
-                'user_id' => $request->user()?->id,
-                'context' => ['error' => $e->getMessage()],
-            ]);
-
-            return response()->json([
-                'message' => 'Workflow execution failed',
-                'error' => $e->getMessage(),
-            ], 500);
-        }
+        return response()->json([
+            'data' => new WorkflowExecutionResource($execution),
+            'message' => $runMode === 'async' ? 'Workflow execution queued' : 'Workflow execution completed',
+        ], $runMode === 'async' ? 202 : 200);
     }
 
     public function getProgress(Workflow $workflow)
     {
-        $workflow->load(['tasks']);
+        $latestExecution = $workflow->executions()->with('stepLogs')->latest()->first();
 
         return response()->json([
             'data' => [
-                'id' => $workflow->id,
-                'name' => $workflow->name,
-                'status' => $workflow->status,
-                'status_label' => $workflow->status_label,
-                'progress' => $workflow->progress,
-                'total_steps' => $workflow->total_steps,
-                'completed_steps' => $workflow->completed_steps,
-                'execution_count' => $workflow->execution_count,
-                'success_rate' => $workflow->getSuccessRate(),
-                'last_executed_at' => $workflow->last_executed_at,
-                'step_results' => $this->executor->getStepResults(),
-            ]
+                'workflow' => new WorkflowResource($workflow),
+                'latest_execution' => $latestExecution ? new WorkflowExecutionResource($latestExecution) : null,
+            ],
         ]);
+    }
+
+    public function showExecution(WorkflowExecution $execution)
+    {
+        $execution->load(['workflow', 'version', 'stepLogs' => fn ($query) => $query->orderBy('created_at')]);
+
+        return new WorkflowExecutionResource($execution);
+    }
+
+    public function resume(ResumeWorkflowExecutionRequest $request, WorkflowExecution $execution)
+    {
+        if ($execution->status !== WorkflowExecution::STATUS_PAUSED) {
+            return response()->json([
+                'code' => 'execution_not_paused',
+                'message' => 'Only paused workflow executions can be resumed.',
+            ], 409);
+        }
+
+        if ($request->validated('decision') === 'deny') {
+            $execution = $this->stateManager->cancel($execution);
+            return new WorkflowExecutionResource($execution->load('stepLogs'));
+        }
+
+        $execution = $this->stateManager->mergeResumePayload($execution, $request->validated('input_payload') ?? []);
+
+        if ($execution->run_mode === 'async') {
+            ExecuteWorkflowJob::dispatch($execution->id);
+            return (new WorkflowExecutionResource($execution->load('stepLogs')))->response()->setStatusCode(202);
+        }
+
+        $execution = $this->interpreter->run($execution);
+
+        return new WorkflowExecutionResource($execution->load('stepLogs'));
+    }
+
+    public function cancel(WorkflowExecution $execution)
+    {
+        if ($execution->isTerminal()) {
+            return response()->json([
+                'code' => 'execution_terminal',
+                'message' => 'Terminal workflow executions cannot be cancelled.',
+            ], 409);
+        }
+
+        $execution = $this->stateManager->cancel($execution);
+
+        return new WorkflowExecutionResource($execution->load('stepLogs'));
     }
 
     public function getTemplates(Request $request)
     {
         $templates = $this->getWorkflowTemplates();
 
-        if ($request->has('category')) {
-            $templates = array_filter($templates, fn($t) => $t['category'] === $request->category);
+        if ($request->filled('category')) {
+            $templates = array_filter($templates, fn ($template) => $template['category'] === $request->query('category'));
         }
 
         return response()->json(['data' => array_values($templates)]);
@@ -246,9 +225,9 @@ class WorkflowController extends Controller
                 'description' => 'Automated workflow for new contact onboarding',
                 'category' => 'contacts',
                 'steps' => [
-                    ['name' => 'Create contact profile', 'action' => 'agent', 'agent_type' => 'autonomous'],
-                    ['name' => 'Send welcome message', 'action' => 'agent', 'agent_type' => 'autonomous'],
-                    ['name' => 'Log onboarding', 'action' => 'log', 'message' => 'Contact onboarded'],
+                    ['id' => 'create_profile', 'name' => 'Create contact profile', 'type' => 'agent', 'agent_type' => 'autonomous'],
+                    ['id' => 'send_welcome', 'name' => 'Send welcome message', 'type' => 'agent', 'agent_type' => 'autonomous'],
+                    ['id' => 'log_onboarding', 'name' => 'Log onboarding', 'type' => 'log', 'message' => 'Contact onboarded'],
                 ],
             ],
             [
@@ -257,9 +236,10 @@ class WorkflowController extends Controller
                 'description' => 'Generate daily summary of activities',
                 'category' => 'reporting',
                 'steps' => [
-                    ['name' => 'Collect daily data', 'action' => 'agent', 'agent_type' => 'autonomous'],
-                    ['name' => 'Generate summary', 'action' => 'agent', 'agent_type' => 'reflection'],
-                    ['name' => 'Send notification', 'action' => 'agent', 'agent_type' => 'autonomous'],
+                    ['id' => 'collect_data', 'name' => 'Collect daily data', 'type' => 'agent', 'agent_type' => 'autonomous'],
+                    ['id' => 'generate_summary', 'name' => 'Generate summary', 'type' => 'agent', 'agent_type' => 'reflection'],
+                    ['id' => 'approval_gate', 'name' => 'Review summary', 'type' => 'wait', 'wait_for' => 'approval'],
+                    ['id' => 'send_notification', 'name' => 'Send notification', 'type' => 'agent', 'agent_type' => 'autonomous'],
                 ],
             ],
             [
@@ -268,20 +248,9 @@ class WorkflowController extends Controller
                 'description' => 'Automated error detection and recovery',
                 'category' => 'maintenance',
                 'steps' => [
-                    ['name' => 'Detect error', 'action' => 'condition', 'condition' => ['field' => 'status', 'operator' => '==', 'value' => 'error']],
-                    ['name' => 'Retry operation', 'action' => 'agent', 'agent_type' => 'autonomous'],
-                    ['name' => 'Alert if failed', 'action' => 'log', 'message' => 'Recovery failed'],
-                ],
-            ],
-            [
-                'id' => 'contact-analysis',
-                'name' => 'Contact Analysis',
-                'description' => 'Deep analysis of contact interactions',
-                'category' => 'analytics',
-                'steps' => [
-                    ['name' => 'Gather contact data', 'action' => 'agent', 'agent_type' => 'autonomous'],
-                    ['name' => 'Analyze sentiment', 'action' => 'agent', 'agent_type' => 'reflection'],
-                    ['name' => 'Generate insights', 'action' => 'agent', 'agent_type' => 'specialized'],
+                    ['id' => 'detect_error', 'name' => 'Detect error', 'type' => 'decision', 'condition' => ['field' => 'status', 'operator' => '==', 'value' => 'error'], 'then' => 'retry_operation', 'else' => 'log_clean'],
+                    ['id' => 'retry_operation', 'name' => 'Retry operation', 'type' => 'agent', 'agent_type' => 'autonomous'],
+                    ['id' => 'log_clean', 'name' => 'Log no-op', 'type' => 'log', 'message' => 'No recovery needed'],
                 ],
             ],
         ];

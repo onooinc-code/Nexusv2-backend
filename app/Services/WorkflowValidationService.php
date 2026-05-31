@@ -7,7 +7,22 @@ use Illuminate\Support\Facades\Log;
 class WorkflowValidationService
 {
     protected array $requiredStepFields = ['name', 'action'];
-    protected array $validActions = ['process', 'delay', 'log', 'condition', 'agent'];
+    protected array $validActions = [
+        'process',
+        'delay',
+        'log',
+        'condition',
+        'agent',
+        'action',
+        'task',
+        'decision',
+        'parallel',
+        'wait',
+        'loop',
+        'code',
+        'compensate',
+        'trigger',
+    ];
 
     public function validateWorkflow(array $workflowData): array
     {

@@ -3,7 +3,7 @@
 namespace App\Services;
 
 use App\Models\AgentTask;
-use App\Models\SystemLog;
+use App\Models\TaskLog;
 use Illuminate\Support\Facades\Log;
 
 class TaskLogService
@@ -36,14 +36,11 @@ class TaskLogService
     protected function persistLog(AgentTask $task, string $level, string $message, array $context = []): void
     {
         try {
-            SystemLog::create([
+            TaskLog::create([
+                'task_id' => $task->id,
                 'level' => $level,
                 'message' => $message,
-                'context' => array_merge($context, [
-                    'task_id' => $task->id,
-                    'task_title' => $task->title,
-                ]),
-                'source' => 'task',
+                'context' => $context,
             ]);
         } catch (\Throwable $e) {
             Log::warning("Failed to persist task log: " . $e->getMessage());

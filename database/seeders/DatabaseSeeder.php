@@ -26,12 +26,15 @@ class DatabaseSeeder extends Seeder
             ]
         );
 
-        $this->call([SettingSeeder::class]);
-        $this->call([AgentPersonaSeeder::class]);
-        $this->call([MCPServerSeeder::class]);
-        $this->call([DefaultAgentToolSeeder::class]);
-        $this->call([SystemAgentSeeder::class]);
-        $this->call([Phase02Seeder::class]);
-        $this->call([AiProvidersSeeder::class]);
+        $this->call([
+            DemoUserSeeder::class,
+            SettingSeeder::class,
+            AgentPersonaSeeder::class,
+            MCPServerSeeder::class,
+            DefaultAgentToolSeeder::class,
+            SystemAgentSeeder::class,
+            Phase02Seeder::class,
+            AiProvidersSeeder::class,
+        ]);
     }
 }
