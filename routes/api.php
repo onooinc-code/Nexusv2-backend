@@ -44,6 +44,10 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api']], function () {
     Route::post('/webhooks/waha', [\App\Http\Controllers\WebhookController::class, 'handleWahaWebhook'])
         ->name('webhooks.waha');
 
+    // Workflow webhook endpoint
+    Route::post('/webhooks/workflows/{id}', [\App\Http\Controllers\WorkflowWebhookController::class, 'handle'])
+        ->name('webhooks.workflows');
+
     Route::prefix('monitoring')->group(function () {
         Route::get('/health', [\App\Http\Controllers\Monitoring\HealthController::class, 'health']);
         Route::get('/health/reverb', [\App\Http\Controllers\Monitoring\HealthController::class, 'reverb']);
@@ -82,12 +86,18 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', 'auth:sanctum']], functi
 
     // Standard single-contact action routes (before resource to avoid conflicts)
     Route::post('/contacts/import', [\App\Http\Controllers\ContactController::class, 'import'])
+        ->middleware('throttle:10,1')
         ->name('contacts.import');
     Route::post('/contacts/import/preview', [\App\Http\Controllers\ContactImportController::class, 'preview'])
         ->name('contacts.import.preview');
     Route::post('/contacts/import/whatsapp', [\App\Http\Controllers\ContactImportController::class, 'importWhatsApp'])
+        ->middleware('throttle:10,1')
         ->name('contacts.import.whatsapp');
+    Route::post('/contacts/import/whatsapp/waha', [\App\Http\Controllers\ContactImportController::class, 'importWaha'])
+        ->middleware('throttle:10,1')
+        ->name('contacts.import.whatsapp.waha');
     Route::post('/contacts/import/facebook', [\App\Http\Controllers\ContactImportController::class, 'importFacebook'])
+        ->middleware('throttle:10,1')
         ->name('contacts.import.facebook');
     Route::get('/contacts/imports', [\App\Http\Controllers\ContactImportController::class, 'listBatches'])
         ->name('contacts.imports.index');
@@ -268,26 +278,33 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', 'auth:sanctum']], functi
     /**
      * Agents Hub Routes
      */
-    Route::resource('agents', \App\Http\Controllers\AgentController::class);
-    Route::post('/agents/{id}/run', [\App\Http\Controllers\AgentController::class, 'run'])
-        ->name('agents.run');
-    Route::post('/agents/{id}/simulate', [\App\Http\Controllers\AgentController::class, 'simulate'])
-        ->name('agents.simulate');
-    Route::post('/agents/{id}/quarantine', [\App\Http\Controllers\AgentController::class, 'quarantine'])
-        ->name('agents.quarantine');
-    Route::post('/agents/{id}/unquarantine', [\App\Http\Controllers\AgentController::class, 'unquarantine'])
-        ->name('agents.unquarantine');
-    Route::get('/agents/{id}/status', [\App\Http\Controllers\AgentController::class, 'getStatus'])
-        ->name('agents.status');
-    Route::get('/agents/{id}/logs', [\App\Http\Controllers\AgentController::class, 'getLogs'])
-        ->name('agents.logs');
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::resource('agents', \App\Http\Controllers\AgentController::class);
+        Route::post('/agents/{id}/run', [\App\Http\Controllers\AgentController::class, 'run'])
+            ->name('agents.run');
+        Route::post('/agents/{id}/simulate', [\App\Http\Controllers\AgentController::class, 'simulate'])
+            ->name('agents.simulate');
+        Route::post('/agents/{id}/quarantine', [\App\Http\Controllers\AgentController::class, 'quarantine'])
+            ->name('agents.quarantine');
+        Route::post('/agents/{id}/unquarantine', [\App\Http\Controllers\AgentController::class, 'unquarantine'])
+            ->name('agents.unquarantine');
+        Route::get('/agents/{id}/status', [\App\Http\Controllers\AgentController::class, 'getStatus'])
+            ->name('agents.status');
+        Route::get('/agents/{id}/logs', [\App\Http\Controllers\AgentController::class, 'getLogs'])
+            ->name('agents.logs');
 
-    Route::resource('agent-personas', \App\Http\Controllers\AgentPersonaController::class);
-    Route::resource('mcp-servers', \App\Http\Controllers\MCPServerController::class);
-    Route::post('/mcp-servers/{name}/connect', [\App\Http\Controllers\MCPServerController::class, 'connect'])
-        ->name('mcp-servers.connect');
-    Route::post('/mcp-servers/{name}/disconnect', [\App\Http\Controllers\MCPServerController::class, 'disconnect'])
-        ->name('mcp-servers.disconnect');
+        Route::get('/agent-tools', [\App\Http\Controllers\AgentToolLibraryController::class, 'index'])
+            ->name('agent-tools.index');
+        Route::get('/agent-tools/{id}', [\App\Http\Controllers\AgentToolLibraryController::class, 'show'])
+            ->name('agent-tools.show');
+
+        Route::resource('agent-personas', \App\Http\Controllers\AgentPersonaController::class);
+        Route::resource('mcp-servers', \App\Http\Controllers\MCPServerController::class);
+        Route::post('/mcp-servers/{name}/connect', [\App\Http\Controllers\MCPServerController::class, 'connect'])
+            ->name('mcp-servers.connect');
+        Route::post('/mcp-servers/{name}/disconnect', [\App\Http\Controllers\MCPServerController::class, 'disconnect'])
+            ->name('mcp-servers.disconnect');
+    });
 
     /**
      * Workflows Hub Routes
@@ -383,48 +400,16 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', 'auth:sanctum']], functi
      * AI Models Hub Routes
      * NOTE: Specific routes must be defined BEFORE resource routes to prevent route conflicts
      */
-    // AI Models custom routes (must come before resource)
-    Route::post('/ai-models/execute', [\App\Http\Controllers\AiModelController::class, 'execute'])
-        ->name('ai-models.execute');
-
-    Route::post('/ai-models/execute-with-fallback', [\App\Http\Controllers\AiModelController::class, 'executeWithFallback'])
-        ->name('ai-models.execute-with-fallback');
-
-    Route::post('/ai-models/select', [\App\Http\Controllers\AiModelController::class, 'selectModel'])
-        ->name('ai-models.select');
-
-    Route::post('/ai-models/optimize-cost', [\App\Http\Controllers\AiModelController::class, 'optimizeCost'])
-        ->name('ai-models.optimize-cost');
-
-    Route::post('/ai-models/route-quality', [\App\Http\Controllers\AiModelController::class, 'routeByQuality'])
-        ->name('ai-models.route-quality');
-    Route::post('/ai-models/route-speed', [\App\Http\Controllers\AiModelController::class, 'routeBySpeed'])
-        ->name('ai-models.route-speed');
-
-    Route::get('/ai-models/providers', [\App\Http\Controllers\AiModelController::class, 'providers'])
-        ->name('ai-models.providers');
-    Route::get('/ai-models/key-pool', [\App\Http\Controllers\AiModelController::class, 'keyPoolStatus'])
-        ->name('ai-models.key-pool');
-    Route::get('/ai-models/key-health', [\App\Http\Controllers\AiModelController::class, 'keyHealth'])
-        ->name('ai-models.key-health');
-    Route::get('/ai-models/rate-limits', [\App\Http\Controllers\AiModelController::class, 'rateLimitStatus'])
-        ->name('ai-models.rate-limits');
-
-    Route::get('/ai-models/rotation-schedule', [\App\Http\Controllers\AiModelController::class, 'rotationSchedule'])
-        ->name('ai-models.rotation-schedule');
-    Route::post('/ai-models/rotate-expired', [\App\Http\Controllers\AiModelController::class, 'rotateExpired'])
-        ->name('ai-models.rotate-expired');
-    Route::get('/ai-models/fallback-chain', [\App\Http\Controllers\AiModelController::class, 'fallbackChainStatus'])
-        ->name('ai-models.fallback-chain');
-    Route::get('/ai-models/budget', [\App\Http\Controllers\AiModelController::class, 'budgetStatus'])
-        ->name('ai-models.budget');
-
-    // AI Models resource and ID-specific routes
+    // AI Models resource and ID-specific routes (Legacy API, keeping for backward compatibility)
     Route::resource('ai-models', \App\Http\Controllers\AiModelController::class);
     Route::post('/ai-models/{id}/test', [\App\Http\Controllers\AiModelController::class, 'test'])
         ->name('ai-models.test');
 
     // New AI Models Hub endpoints for UP-002
+    // Provider Health & Observability
+    Route::get('/ai/providers/health', [\App\Http\Controllers\AiRouteController::class, 'providerHealth'])
+        ->name('ai.providers.health');
+
     Route::get('/ai/providers', [\App\Http\Controllers\AiProviderController::class, 'index'])
         ->name('ai.providers.index');
     Route::post('/ai/providers', [\App\Http\Controllers\AiProviderController::class, 'store'])
@@ -452,17 +437,23 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', 'auth:sanctum']], functi
     Route::post('/ai-models/route', [\App\Http\Controllers\AiRouteController::class, 'route'])
         ->name('ai-models.route');
 
+    // AI Instances
+    Route::apiResource('ai-instances', \App\Http\Controllers\AiInstanceController::class);
+
+
     // Cost Analytics & Budget Endpoints
     Route::get('/ai/cost/forecast', [\App\Http\Controllers\AiCostAnalyticsController::class, 'forecast'])
         ->name('ai.cost.forecast');
     Route::post('/ai/cost/budget', [\App\Http\Controllers\AiCostAnalyticsController::class, 'setBudget'])
         ->name('ai.cost.budget');
 
-    // Provider Health & Observability
-    Route::get('/ai/providers/health', [\App\Http\Controllers\AiRouteController::class, 'providerHealth'])
-        ->name('ai.providers.health');
+    // Audit Trail
     Route::get('/ai/audit-trail', [\App\Http\Controllers\AiRouteController::class, 'auditTrail'])
         ->name('ai.audit.trail');
+
+    // Telemetry Dashboard
+    Route::get('/ai-hub/telemetry', [\App\Http\Controllers\AiRouteController::class, 'telemetry'])
+        ->name('ai.telemetry');
 
 
     /**
@@ -484,6 +475,10 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', 'auth:sanctum']], functi
        Route::post('/system/agent-pause', [\App\Http\Controllers\SettingController::class, 'toggleGlobalAgentPause'])
              ->middleware('can:toggleEmergency,App\Models\Setting')
              ->name('settings.agent-pause');
+
+       Route::post('/system/maintenance-mode', [\App\Http\Controllers\SettingController::class, 'toggleMaintenanceMode'])
+             ->middleware('can:toggleEmergency,App\Models\Setting')
+             ->name('settings.maintenance-mode');
 
        Route::post('/system/api-proxy', [\App\Http\Controllers\SettingController::class, 'apiProxy'])
              ->name('settings.api-proxy');

@@ -82,19 +82,14 @@ class VectorizeMemoryJob extends BaseJob
                 throw new Exception("Memory not found: {$this->memoryId}");
             }
 
-            // Get OpenAI API key
-            $apiKey = $this->getOpenAIApiKey();
-            if (!$apiKey) {
-                throw new Exception("No OpenAI API key found");
-            }
-
-            // Call OpenAI Embeddings API
+            // Call AiModelsHub Gateway for Embeddings
             $startTime = microtime(true);
-            $vector = $this->generateEmbedding($this->content, $apiKey);
+            $gateway = app(\App\Services\AiModelsHub\UniversalAiGatewayService::class);
+            $vector = $gateway->generateEmbeddings($this->content);
             $durationMs = round((microtime(true) - $startTime) * 1000, 2);
 
-            if (!$vector) {
-                throw new Exception("Failed to generate embedding");
+            if (empty($vector)) {
+                throw new Exception("Failed to generate embedding: empty vector returned from Gateway");
             }
 
             // Update memory with embedding vector
@@ -136,64 +131,6 @@ class VectorizeMemoryJob extends BaseJob
 
             throw $e;
         }
-    }
-
-    /**
-     * Generate embedding using OpenAI API.
-     *
-     * @param string $text Text to embed
-     * @param string $apiKey OpenAI API key
-     * @return array|null Vector array or null on failure
-     */
-    protected function generateEmbedding(string $text, string $apiKey): ?array
-    {
-        try {
-            $response = Http::withHeaders([
-                'Authorization' => "Bearer {$apiKey}",
-                'Content-Type' => 'application/json',
-            ])->post('https://api.openai.com/v1/embeddings', [
-                'model' => 'text-embedding-3-small',
-                'input' => $text,
-            ]);
-
-            if ($response->failed()) {
-                \Log::error("OpenAI embedding API failed", [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
-                return null;
-            }
-
-            $data = $response->json();
-            return $data['data'][0]['embedding'] ?? null;
-
-        } catch (Exception $e) {
-            \Log::error("Error generating embedding", [
-                'exception' => $e->getMessage(),
-            ]);
-            return null;
-        }
-    }
-
-    /**
-     * Get OpenAI API key.
-     *
-     * @return string|null API key or null
-     */
-    protected function getOpenAIApiKey(): ?string
-    {
-        // Try to get from database first
-        $apiKey = ApiKey::where('provider', 'openai')
-            ->where('type', 'ai_provider')
-            ->where('is_active', true)
-            ->first()?->key;
-
-        // Fallback to environment variable
-        if (!$apiKey) {
-            $apiKey = config('services.openai.api_key');
-        }
-
-        return $apiKey;
     }
 
     /**

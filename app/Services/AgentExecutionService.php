@@ -84,17 +84,32 @@ class AgentExecutionService
     }
 
     /**
-     * Execute an agent asynchronously — dispatches ExecuteAgentTaskJob to queue.
+     * Execute an agent asynchronously — generates an AgentTask and dispatches ExecuteAgentTaskJob to queue.
      */
     public function runAsync(Agent $agent, array $input): array
     {
         $traceId = Str::uuid()->toString();
 
-        \App\Jobs\ExecuteAgentTaskJob::dispatch($agent->id, $input, $traceId);
+        // 1. Create the AgentTask record
+        $task = \App\Models\AgentTask::create([
+            'agent_id' => $agent->id,
+            'title' => 'Async Execution: ' . substr(is_array($input) ? json_encode($input) : $input, 0, 50),
+            'status' => \App\Models\AgentTask::STATUS_TODO,
+            'type' => 'agent',
+            'payload_data' => $input,
+            'metadata' => [
+                'trace_id' => $traceId,
+                'initiated_via' => 'AgentExecutionService@runAsync'
+            ]
+        ]);
+
+        // 2. Dispatch job with the task model
+        \App\Jobs\ExecuteAgentTaskJob::dispatch($task);
 
         return [
             'success'  => true,
             'trace_id' => $traceId,
+            'task_id'  => $task->id,
             'mode'     => 'async',
             'message'  => 'Agent task queued for execution.',
         ];

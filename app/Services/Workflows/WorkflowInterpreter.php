@@ -14,7 +14,8 @@ class WorkflowInterpreter
 {
     public function __construct(
         protected WorkflowStateManager $stateManager,
-        protected WorkflowTaskDispatcher $dispatcher
+        protected WorkflowTaskDispatcher $dispatcher,
+        protected WorkflowCompensationEngine $compensationEngine
     ) {}
 
     public function run(WorkflowExecution $execution): WorkflowExecution
@@ -76,6 +77,13 @@ class WorkflowInterpreter
         } catch (\Throwable $e) {
             $execution = $this->stateManager->fail($execution, $e->getMessage(), $state);
             $workflow->recordError();
+
+            // Trigger compensation rollback
+            try {
+                $this->compensationEngine->compensate($execution);
+            } catch (\Throwable $compEx) {
+                // Ignore compensation errors as they are logged inside the engine
+            }
 
             return $execution;
         }
@@ -193,7 +201,17 @@ class WorkflowInterpreter
             $branchStep['id'] ??= $step['id'] . '_branch_' . ($branchIndex + 1);
             $branchStep['name'] ??= $step['name'] . ' Branch ' . ($branchIndex + 1);
             $branchStep['type'] ??= 'action';
-            $outputs[$branchStep['id']] = $this->dispatcher->dispatch($execution, $branchStep, $state['variables'] ?? []);
+
+            \App\Jobs\ExecuteWorkflowStepJob::dispatch(
+                $execution->id,
+                $branchStep,
+                $state['variables'] ?? []
+            );
+
+            $outputs[$branchStep['id']] = [
+                'status' => 'queued',
+                'step_id' => $branchStep['id']
+            ];
         }
 
         return ['success' => true, 'output' => ['parallel' => $outputs]];

@@ -35,14 +35,22 @@ class WorkflowStepCompleted extends Event implements ShouldBroadcast
         return new PrivateChannel("workflow.{$this->workflowId}");
     }
 
+    public function broadcastAs(): string
+    {
+        return 'workflow.step_completed';
+    }
+
     public function broadcastWith(): array
     {
         return [
             'step_id' => $this->stepId,
+            'step_name' => $this->stepTitle,  // alias for frontend compatibility
             'step_title' => $this->stepTitle,
             'status' => $this->status,
             'result' => $this->result,
             'metadata' => $this->metadata,
+            'duration_ms' => $this->metadata['duration_ms'] ?? null,
+            'error' => $this->metadata['error'] ?? null,
             'timestamp' => $this->timestamp->toDateTimeString(),
         ];
     }

@@ -100,6 +100,15 @@ class Contact extends BaseModel
         return $this->hasMany(Memory::class);
     }
 
+    /**
+     * AI-extracted memories stored in the vNext contact_memories table.
+     * Distinct from memories() which relates to the Nexus AI Memory model.
+     */
+    public function contactMemories(): HasMany
+    {
+        return $this->hasMany(ContactMemory::class);
+    }
+
     public function identifiers(): HasMany
     {
         return $this->hasMany(ContactIdentifier::class);

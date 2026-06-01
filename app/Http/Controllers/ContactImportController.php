@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Contact;
 use App\Models\ContactImportBatch;
 use App\Services\Contact\ContactImportPipeline;
+use App\Events\ContactImportCompleted;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -50,6 +51,40 @@ class ContactImportController extends Controller
         return $this->importMessages($request, 'facebook');
     }
 
+    public function importWaha(Request $request)
+    {
+        $data = $request->validate([
+            'contact_id' => ['required', 'integer', 'exists:contacts,id'],
+            'session' => ['required', 'string'],
+            'chat_id' => ['required', 'string'],
+            'limit' => ['nullable', 'integer'],
+        ]);
+
+        $contact = Contact::findOrFail($data['contact_id']);
+        
+        $content = json_encode([
+            'session' => $data['session'],
+            'chatId' => $data['chat_id'],
+            'limit' => $data['limit'] ?? 100
+        ]);
+
+        $result = $this->importPipeline->commit(
+            $contact,
+            'whatsapp_waha',
+            $content,
+            'api',
+            'UTC'
+        );
+
+        if (! $result['success']) {
+            return response()->json(['error' => $result['error']], 422);
+        }
+
+        event(new ContactImportCompleted($contact, $result['messages_imported'] ?? $result['batch']->messages()->count(), 'whatsapp_waha'));
+
+        return response()->json(['data' => $result]);
+    }
+
     protected function importMessages(Request $request, string $source)
     {
         $data = $request->validate([
@@ -74,6 +109,8 @@ class ContactImportController extends Controller
         if (! $result['success']) {
             return response()->json(['error' => $result['error']], 422);
         }
+
+        event(new ContactImportCompleted($contact, $result['messages_imported'] ?? clone $result['batch']->messages()->count(), $source));
 
         return response()->json(['data' => $result]);
     }

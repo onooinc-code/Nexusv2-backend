@@ -12,12 +12,14 @@ class ContactImportPipeline
     protected WhatsAppImportParser $whatsappParser;
     protected FacebookImportParser $facebookParser;
     protected ContactMessageNormalizer $normalizer;
+    protected WahaImportService $wahaService;
 
     public function __construct()
     {
         $this->whatsappParser = new WhatsAppImportParser();
         $this->facebookParser = new FacebookImportParser();
         $this->normalizer = new ContactMessageNormalizer();
+        $this->wahaService = new WahaImportService();
     }
 
     /**
@@ -187,9 +189,19 @@ class ContactImportPipeline
     ): array {
         return match($source) {
             'whatsapp' => $this->parseWhatsApp($content, $format, $contact, $timezone),
+            'whatsapp_waha' => $this->parseWaha($content),
             'facebook' => $this->parseFacebook($content, $format, $timezone),
             default => throw new \InvalidArgumentException("Unknown source: {$source}"),
         };
+    }
+
+    /**
+     * Parse WAHA live sync format
+     */
+    private function parseWaha(string $content): array
+    {
+        $data = json_decode($content, true);
+        return $this->wahaService->fetchAndParseMessages($data['session'], $data['chatId'], $data['limit'] ?? 100);
     }
 
     /**

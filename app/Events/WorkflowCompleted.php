@@ -24,6 +24,11 @@ class WorkflowCompleted extends Event implements ShouldBroadcast
         return new PrivateChannel("workflow.{$this->workflowId}");
     }
 
+    public function broadcastAs(): string
+    {
+        return 'workflow.completed';
+    }
+
     public function broadcastWith(): array
     {
         return [

@@ -41,7 +41,7 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton('nexus.ai', function ($app) {
-            return new \App\Services\AI\AIOrchestrationService($app['config']);
+            return $app->make(\App\Services\AiModelsHub\UniversalAiGatewayService::class);
         });
 
         $this->app->singleton('nexus.whatsapp', function ($app) {
@@ -93,6 +93,8 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(\App\Events\WorkflowStepCompleted::class, [LogWorkflowStepCompleted::class, 'handle']);
         Event::listen(JobFailed::class, [LogJobFailed::class, 'handle']);
         Event::listen(JobFailed::class, [NotifyJobFailed::class, 'handle']);
+        Event::listen(\App\Events\TaskCompletedEvent::class, [\App\Listeners\ResumeWorkflowOnTaskCompletion::class, 'handle']);
+        Event::listen(\App\Events\TaskFailedEvent::class, [\App\Listeners\ResumeWorkflowOnTaskCompletion::class, 'handle']);
 
         // Register broadcast authorization policies
         Gate::policy(ConversationSession::class, SessionPolicy::class);
@@ -111,6 +113,9 @@ class AppServiceProvider extends ServiceProvider
 
         // Register macros for common operations
         $this->registerMacros();
+
+        // Register wildcard workflow event trigger listener
+        app(\App\Services\Workflows\WorkflowEventTriggerService::class)->registerWildcardListener();
     }
 
     /**

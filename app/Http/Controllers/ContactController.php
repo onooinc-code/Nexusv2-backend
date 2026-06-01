@@ -20,6 +20,9 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 use Illuminate\Support\Facades\Cache;
 use App\Http\Resources\ContactResource;
 use Illuminate\Support\Str;
+use App\Jobs\AnalyzeContactMessagesJob;
+use App\Jobs\RunContactMemoryMaintenanceJob;
+use App\Services\Contact\ContactMemoryMaintenancePipeline;
 
 class ContactController extends Controller
 {
@@ -212,11 +215,22 @@ class ContactController extends Controller
                 ->exists();
 
             if (!$exists) {
-                $contact->identifiers()->create([
-                    'type' => $identifier['type'],
-                    'value' => $normalized,
-                    'is_primary' => $identifier['is_primary'] ?? false,
-                ]);
+                try {
+                    $contact->identifiers()->create([
+                        'type'       => $identifier['type'],
+                        'value'      => $normalized,
+                        'is_primary' => $identifier['is_primary'] ?? false,
+                    ]);
+                } catch (\Illuminate\Database\QueryException $e) {
+                    // Swallow unique-constraint violations: another contact already holds
+                    // this identifier value. We skip rather than crash contact creation.
+                    $this->logService->warning('Identifier already held by another contact; skipping.', [
+                        'contact_id' => $contact->id,
+                        'type'       => $identifier['type'],
+                        'value'      => $normalized,
+                        'error'      => $e->getMessage(),
+                    ]);
+                }
             }
         }
     }
@@ -364,7 +378,10 @@ class ContactController extends Controller
     {
         $contact = Contact::findOrFail($id);
         $days = max(1, (int) $request->query('days', 7));
-        $analytics = $this->contactHubService->getContactAnalyticsWithOptions($contact, $days);
+        
+        $analytics = Cache::remember("contact_{$id}_analytics_days_{$days}", 300, function () use ($contact, $days) {
+            return $this->contactHubService->getContactAnalyticsWithOptions($contact, $days);
+        });
 
         return response()->json(['data' => ['contact_id' => $id, 'analytics' => $analytics]]);
     }
@@ -535,8 +552,13 @@ class ContactController extends Controller
     {
         Contact::findOrFail($id);
 
+        $cacheKey = "contact_{$id}_messages_" . md5(json_encode($request->query()));
+        $data = Cache::remember($cacheKey, 60, function () use ($request, $id) {
+            return $this->filteredMessages($request, (int) $id)->paginate($request->integer('per_page', 25));
+        });
+
         return response()->json([
-            'data' => $this->filteredMessages($request, (int) $id)->paginate($request->integer('per_page', 25)),
+            'data' => $data,
         ]);
     }
 
@@ -780,10 +802,12 @@ class ContactController extends Controller
 
         $run = ContactAnalysisRun::create([
             'contact_id' => $id,
-            'status' => $data['status'] ?? 'pending',
+            'status' => 'queued',
             'options' => $data['options'] ?? [],
             'trace_id' => (string) Str::uuid(),
         ]);
+
+        AnalyzeContactMessagesJob::dispatch($run);
 
         return response()->json(['data' => $run], 201);
     }
@@ -820,12 +844,17 @@ class ContactController extends Controller
         ]);
 
         $runs = collect($data['contact_ids'])->map(function ($contactId) use ($data) {
-            return ContactAnalysisRun::create([
+            $run = ContactAnalysisRun::create([
                 'contact_id' => $contactId,
-                'status' => 'pending',
+                'status' => 'queued',
                 'options' => $data['options'] ?? [],
                 'trace_id' => (string) Str::uuid(),
             ]);
+
+            // Dispatch job for each run so analysis actually executes
+            AnalyzeContactMessagesJob::dispatch($run);
+
+            return $run;
         });
 
         return response()->json(['data' => $runs], 201);
@@ -833,10 +862,61 @@ class ContactController extends Controller
 
     public function applyAnalysisRun($run)
     {
-        $analysisRun = ContactAnalysisRun::findOrFail($run);
-        $analysisRun->update(['status' => 'completed']);
+        $analysisRun = ContactAnalysisRun::with(['findings', 'contact'])->findOrFail($run);
+        $contact = $analysisRun->contact;
 
-        return response()->json(['data' => $analysisRun]);
+        if (!$contact) {
+            return response()->json(['error' => 'Contact not found for this analysis run.'], 422);
+        }
+
+        $meta = $contact->metadata ?? [];
+
+        foreach ($analysisRun->findings as $finding) {
+            $type = $finding->type ?? $finding->finding_type;
+
+            switch ($type) {
+                case 'topics':
+                    $topics = is_array($finding->content) ? $finding->content : json_decode($finding->content, true);
+                    if (is_array($topics)) {
+                        foreach ($topics as $topicName) {
+                            \App\Models\ContactTopic::updateOrCreate(
+                                ['contact_id' => $contact->id, 'topic' => (string) $topicName],
+                                ['mention_count' => \DB::raw('mention_count + 1')]
+                            );
+                        }
+                    }
+                    break;
+
+                case 'persona':
+                    $meta['persona'] = is_string($finding->content) ? $finding->content : json_encode($finding->content);
+                    break;
+
+                case 'emotional_baseline':
+                    $meta['emotional_baseline'] = is_string($finding->content) ? $finding->content : json_encode($finding->content);
+                    break;
+
+                case 'suggested_rules':
+                    $rules = is_array($finding->content) ? $finding->content : json_decode($finding->content, true);
+                    if (is_array($rules)) {
+                        foreach ($rules as $ruleText) {
+                            \App\Models\ContactReplyRule::firstOrCreate(
+                                ['contact_id' => $contact->id, 'rule' => (string) $ruleText],
+                                ['is_active' => true]
+                            );
+                        }
+                    }
+                    break;
+            }
+        }
+
+        $contact->update([
+            'metadata' => $meta,
+            'profile_confidence' => min(1.0, ($contact->profile_confidence ?? 0) + 0.1),
+        ]);
+
+        $analysisRun->update(['status' => 'completed', 'completed_at' => now()]);
+
+        return response()->json(['data' => $analysisRun->fresh()]);
     }
 
     public function rollbackAnalysisRun($run)
@@ -860,6 +940,7 @@ class ContactController extends Controller
             'dry_run' => ['nullable', 'boolean'],
         ]);
 
+        $isDryRun = (bool) ($data['dry_run'] ?? false);
         $scope = $data['scope'] ?? [];
         if ($id !== null) {
             $scope['contact_id'] = (int) $id;
@@ -867,15 +948,23 @@ class ContactController extends Controller
 
         $run = ContactMemoryMaintenanceRun::create([
             'operation' => $data['operation'],
-            'scope' => $scope,
-            'status' => $data['dry_run'] ?? false ? 'dry_run' : 'pending',
-            'results' => [
-                'message' => 'Maintenance run recorded. Queue execution can be attached when workers are enabled.',
-                'dry_run' => $data['dry_run'] ?? false,
+            'scope'     => $scope,
+            'status'    => $isDryRun ? 'dry_run' : 'queued',
+            'results'   => [
+                'message' => $isDryRun ? 'Dry run — no changes will be made.' : 'Maintenance queued for background processing.',
+                'dry_run' => $isDryRun,
             ],
         ]);
 
-        return response()->json(['data' => $run], 201);
+        if ($isDryRun) {
+            // Dry runs execute synchronously for immediate UI feedback
+            app(ContactMemoryMaintenancePipeline::class)->process($run);
+        } else {
+            // Real operations are dispatched asynchronously so the HTTP response returns immediately
+            RunContactMemoryMaintenanceJob::dispatch($run);
+        }
+
+        return response()->json(['data' => $run->fresh()], 201);
     }
 
     public function memoryMaintenanceRuns(Request $request)

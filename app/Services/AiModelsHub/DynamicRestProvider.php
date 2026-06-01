@@ -174,7 +174,45 @@ class DynamicRestProvider implements AiProviderInterface
 
     public function generateEmbeddings(string $text, array $options = []): array
     {
-        return ['success' => false, 'error' => 'Not implemented for dynamic provider yet'];
+        $record = $this->getProviderRecord();
+        if (!$record) {
+            return ['success' => false, 'error' => 'Provider record not found'];
+        }
+
+        // Default to OpenAI compatible embeddings endpoint
+        $url = rtrim($record->base_url, '/') . '/v1/embeddings';
+        
+        $payload = [
+            'model' => $options['model'] ?? 'text-embedding-3-small',
+            'input' => $text,
+        ];
+
+        try {
+            $response = Http::withHeaders($this->buildHeaders())->post($url, $payload);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                $embedding = $data['data'][0]['embedding'] ?? null;
+                
+                if ($embedding) {
+                    return [
+                        'success' => true,
+                        'provider' => $this->getProviderName(),
+                        'model' => $payload['model'],
+                        'vector' => $embedding,
+                        'usage' => [
+                            'input_tokens' => $data['usage']['prompt_tokens'] ?? 0,
+                        ]
+                    ];
+                }
+                return ['success' => false, 'error' => 'Malformed response from provider'];
+            }
+
+            return ['success' => false, 'error' => $response->body()];
+        } catch (\Exception $e) {
+            Log::error('Dynamic embeddings failed: ' . $e->getMessage());
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
     }
 
     public function validateRequest(array $request): array

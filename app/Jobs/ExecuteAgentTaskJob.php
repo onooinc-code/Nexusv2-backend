@@ -23,6 +23,14 @@ class ExecuteAgentTaskJob implements ShouldQueue
     public int $timeout = 300; // 5 minutes
     public int $backoff = 60; // Start with 1 minute backoff
 
+    /**
+     * Get the middleware the job should pass through.
+     */
+    public function middleware(): array
+    {
+        return [new \App\Jobs\Middleware\TaskRateLimiting];
+    }
+
     protected AgentTask $task;
     protected LogService $logService;
     protected TaskLogService $taskLogService;
@@ -75,12 +83,8 @@ class ExecuteAgentTaskJob implements ShouldQueue
         $this->taskLogService->info($this->task, 'Task execution started');
 
         try {
-            // TODO: Implement actual task execution logic
-            // This would involve calling the appropriate agent executor or workflow engine
-            // based on the task type and associated agent/workflow
-            
-            // For now, we'll simulate task execution
-            $result = $this->simulateTaskExecution();
+            // Dispatch to the correct engine based on task type
+            $result = $this->executeTask();
 
             // Mark task as completed
             $this->task->update([
@@ -107,24 +111,25 @@ class ExecuteAgentTaskJob implements ShouldQueue
     }
 
     /**
-     * Simulate task execution (placeholder for actual implementation)
+     * Execute task via AgentExecutionService or WorkflowEngine
      */
-    protected function simulateTaskExecution(): array
+    protected function executeTask(): array
     {
-        // In a real implementation, this would:
-        // 1. Load the agent or workflow associated with the task
-        // 2. Execute it with the payload_data
-        // 3. Return the result
-        
-        // For now, we'll just return a simulated result
-        return [
-            'executed_at' => now()->toISOString(),
-            'execution_mode' => 'queued_job',
-            'task_type' => $this->task->type,
-            'message' => 'Task executed successfully via queue job',
-            'agent_id' => $this->task->agent_id,
-            'workflow_id' => $this->task->workflow_id,
-        ];
+        if ($this->task->type === 'agent') {
+            if (!$this->task->agent) {
+                throw new \Exception("Agent ID required for agent task execution");
+            }
+            $agentService = app(\App\Services\AgentExecutionService::class);
+            return $agentService->runSync($this->task->agent, $this->task->payload_data ?? []);
+        } elseif ($this->task->type === 'workflow') {
+            if (!$this->task->workflow) {
+                throw new \Exception("Workflow ID required for workflow task execution");
+            }
+            $workflowExecutor = app(\App\Services\WorkflowExecutor::class);
+            return $workflowExecutor->execute($this->task->workflow, $this->task->payload_data ?? []);
+        }
+
+        throw new \Exception("Unsupported task type: {$this->task->type}");
     }
 
     /**
@@ -213,5 +218,8 @@ class ExecuteAgentTaskJob implements ShouldQueue
         $this->task->update([
             'status' => \App\Models\AgentTask::STATUS_FAILED,
         ]);
+
+        // Push to Dead Letter Queue
+        event(new \App\Events\TaskMovedToDLQEvent($this->task, $e));
     }
 }

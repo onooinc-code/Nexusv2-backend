@@ -69,7 +69,22 @@ class TaskLogService
 
     public function getLogs(int $taskId, int $limit = 100): array
     {
-        return array_filter($this->logs, fn($log) => $log['task_id'] === $taskId);
+        return TaskLog::where('task_id', $taskId)
+            ->latest()
+            ->limit($limit)
+            ->get()
+            ->map(function ($log) {
+                return [
+                    'id' => $log->id,
+                    'task_id' => $log->task_id,
+                    'level' => $log->level,
+                    'message' => $log->message,
+                    'context' => $log->context,
+                    'time' => $log->created_at->toISOString(),
+                    'timestamp' => $log->created_at->toIso8601String(),
+                ];
+            })
+            ->toArray();
     }
 
     public function getLogsByLevel(string $level, int $limit = 100): array

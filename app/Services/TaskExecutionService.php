@@ -77,30 +77,59 @@ class TaskExecutionService
             'context' => ['title' => $task->title],
         ]);
 
-        // TODO: Actually execute the task logic here
-        // For now, we'll just mark it as completed
-        // In a real implementation, this would call the appropriate agent/workflow executor
-        
-        // Simulate task execution result
-        $result = [
-            'executed_at' => now()->toISOString(),
-            'execution_mode' => 'synchronous',
-            'message' => 'Task executed successfully',
-        ];
-
         $task->update([
-            'status' => AgentTask::STATUS_COMPLETED,
-            'progress' => 100,
-            'result_data' => $result,
+            'status' => AgentTask::STATUS_IN_PROGRESS,
+            'progress' => 10,
         ]);
 
-        $this->logService->info('Task execution completed synchronously', [
-            'channel' => 'task',
-            'type' => 'execute_now_complete',
-            'related_id' => $task->id,
-            'related_type' => 'App\Models\AgentTask',
-            'context' => ['title' => $task->title, 'result' => $result],
-        ]);
+        try {
+            if ($task->type === 'agent') {
+                if (!$task->agent) {
+                    throw new \Exception("Agent ID required for agent task execution");
+                }
+                $agentService = app(\App\Services\AgentExecutionService::class);
+                $result = $agentService->runSync($task->agent, $task->payload_data ?? []);
+            } elseif ($task->type === 'workflow') {
+                if (!$task->workflow) {
+                    throw new \Exception("Workflow ID required for workflow task execution");
+                }
+                $workflowExecutor = app(\App\Services\WorkflowExecutor::class);
+                $result = $workflowExecutor->execute($task->workflow, $task->payload_data ?? []);
+            } else {
+                throw new \Exception("Unsupported task type for synchronous execution: {$task->type}");
+            }
+
+            $task->update([
+                'status' => AgentTask::STATUS_COMPLETED,
+                'progress' => 100,
+                'result_data' => $result,
+            ]);
+
+            $this->logService->info('Task execution completed synchronously', [
+                'channel' => 'task',
+                'type' => 'execute_now_complete',
+                'related_id' => $task->id,
+                'related_type' => 'App\Models\AgentTask',
+                'context' => ['title' => $task->title, 'result' => $result],
+            ]);
+        } catch (\Throwable $e) {
+            $task->update([
+                'status' => AgentTask::STATUS_FAILED,
+                'progress' => 0,
+                'result_data' => [
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ],
+            ]);
+
+            $this->logService->error('Task execution failed synchronously', [
+                'channel' => 'task',
+                'type' => 'execute_now_failed',
+                'related_id' => $task->id,
+                'related_type' => 'App\Models\AgentTask',
+                'context' => ['title' => $task->title, 'error' => $e->getMessage()],
+            ]);
+        }
     }
 
     /**

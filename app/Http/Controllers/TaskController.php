@@ -9,6 +9,7 @@ use App\Services\TaskQueueService;
 use App\Services\TaskRoutingService;
 use App\Services\TaskManagementService;
 use App\Services\TaskExecutionService;
+use App\Services\TaskLogService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 
@@ -19,7 +20,8 @@ class TaskController extends Controller
         protected TaskQueueService $queue,
         protected TaskRoutingService $router,
         protected TaskManagementService $taskManagementService,
-        protected TaskExecutionService $taskExecutionService
+        protected TaskExecutionService $taskExecutionService,
+        protected TaskLogService $taskLogService
     ) {}
 
     public function index(Request $request)
@@ -66,39 +68,44 @@ class TaskController extends Controller
 
     public function store(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'title' => 'required|string|max:255',
-            'description' => 'nullable|string',
-            'agent_id' => 'nullable|exists:agents,id',
-            'workflow_id' => 'nullable|exists:workflows,id',
-            'priority' => 'nullable|integer|min:0|max:10',
-            'due_at' => 'nullable|date',
-            'metadata' => 'nullable|array',
-        ]);
+        $input = $request->all();
 
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+        // Normalize legacy parameters
+        if ($request->has('due_at') && !$request->has('due_date')) {
+            $input['due_date'] = $request->input('due_at');
+        }
+        if ($request->has('metadata') && !$request->has('payload_data')) {
+            $metadata = $request->input('metadata');
+            $input['payload_data'] = is_array($metadata) ? json_encode($metadata) : $metadata;
+        }
+        if (!$request->has('type')) {
+            $input['type'] = 'agent';
         }
 
-        $data = $validator->validated();
-        $data['status'] = 'pending';
-        $data['progress'] = 0;
+        try {
+            $task = $this->taskManagementService->create($input, $request->user()?->id);
 
-        $task = AgentTask::create($data);
-        // reload to ensure fresh attributes (id, timestamps) are present
-        $task = AgentTask::find($task->id);
-        $this->queue->enqueue($task);
+            // Execute based on type
+            if ($task->type === 'agent') {
+                $this->taskExecutionService->execute($task);
+            } elseif ($task->type === 'system') {
+                $this->taskExecutionService->executeNow($task);
+            }
 
-        $this->logService->info('Task created', [
-            'channel' => 'task',
-            'type' => 'create',
-            'related_id' => $task->id,
-            'related_type' => 'App\Models\AgentTask',
-            'user_id' => $request->user()?->id,
-            'context' => ['title' => $task->title, 'status' => $task->status],
-        ]);
-
-        return response()->json(['data' => $task, 'message' => 'Task created and queued'], 201);
+            return response()->json([
+                'data' => $task,
+                'message' => 'Task created and queued'
+            ], 201);
+        } catch (ValidationException $e) {
+            return response()->json(['errors' => $e->errors()], 422);
+        } catch (\Throwable $e) {
+            $this->logService->error('Failed to create task in store', [
+                'channel' => 'task',
+                'type' => 'store_error',
+                'error' => $e->getMessage()
+            ]);
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
     }
 
     public function show(AgentTask $task)
@@ -110,32 +117,44 @@ class TaskController extends Controller
 
     public function update(Request $request, AgentTask $task)
     {
-        $validator = Validator::make($request->all(), [
-            'title' => 'sometimes|string|max:255',
-            'description' => 'nullable|string',
-            'status' => 'sometimes|string|in:pending,running,paused,completed,failed,cancelled',
-            'progress' => 'nullable|integer|min:0|max:100',
-            'priority' => 'nullable|integer|min:0|max:10',
-            'due_at' => 'nullable|date',
-            'metadata' => 'nullable|array',
-        ]);
+        $input = $request->all();
 
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+        // Normalize legacy parameters
+        if ($request->has('due_at') && !$request->has('due_date')) {
+            $input['due_date'] = $request->input('due_at');
+        }
+        if ($request->has('metadata') && !$request->has('payload_data')) {
+            $metadata = $request->input('metadata');
+            $input['payload_data'] = is_array($metadata) ? json_encode($metadata) : $metadata;
+        }
+        if ($request->has('status')) {
+            $statusMap = [
+                'pending' => 'todo',
+                'running' => 'in-progress',
+                'paused' => 'blocked',
+            ];
+            $input['status'] = $statusMap[$request->input('status')] ?? $request->input('status');
         }
 
-        $task->update($validator->validated());
+        try {
+            $updatedTask = $this->taskManagementService->update($task, $input, $request->user()?->id);
 
-        $this->logService->info('Task updated', [
-            'channel' => 'task',
-            'type' => 'update',
-            'related_id' => $task->id,
-            'related_type' => 'App\Models\AgentTask',
-            'user_id' => $request->user()?->id,
-            'context' => ['changes' => $validator->validated()],
-        ]);
-
-        return response()->json(['data' => $task, 'message' => 'Task updated successfully']);
+            return response()->json([
+                'data' => $updatedTask,
+                'message' => 'Task updated successfully'
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json(['errors' => $e->errors()], 422);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        } catch (\Throwable $e) {
+            $this->logService->error('Failed to update task in store', [
+                'channel' => 'task',
+                'type' => 'update_error',
+                'error' => $e->getMessage()
+            ]);
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
     }
 
     public function destroy(AgentTask $task)
@@ -281,7 +300,7 @@ class TaskController extends Controller
     /**
      * Get execution logs for a task
      */
-    public function logs(AgentTask $task)
+    public function logs(Request $request, AgentTask $task)
     {
         $limit = $request->query('limit', 100);
         $logs = $this->taskLogService->getLogs($task->id, $limit);

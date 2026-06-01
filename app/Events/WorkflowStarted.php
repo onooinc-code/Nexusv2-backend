@@ -24,6 +24,11 @@ class WorkflowStarted extends Event implements ShouldBroadcast
         return new PrivateChannel("workflow.{$this->workflowId}");
     }
 
+    public function broadcastAs(): string
+    {
+        return 'workflow.started';
+    }
+
     public function broadcastWith(): array
     {
         return [

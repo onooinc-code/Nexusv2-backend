@@ -3,78 +3,77 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Services\DeadLetterQueueService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 
 class DlqController extends Controller
 {
+    public function __construct(protected DeadLetterQueueService $dlqService)
+    {
+    }
+
+    /**
+     * Display a listing of failed jobs in the DLQ
+     */
     public function index(Request $request)
     {
-        $perPage = (int) $request->query('per_page', 20);
-        $failedJobs = DB::table('failed_jobs')
-            ->orderBy('failed_at', 'desc')
-            ->paginate($perPage);
+        $perPage = $request->query('per_page', 20);
+        $dlqTasks = $this->dlqService->list((int) $perPage);
 
-        $failedJobs->getCollection()->transform(function ($job) {
-            $payload = json_decode($job->payload, true) ?: [];
-            return [
-                'id' => $job->id,
-                'uuid' => $job->uuid,
-                'connection' => $job->connection,
-                'queue' => $job->queue,
-                'failed_at' => $job->failed_at,
-                'exception' => $job->exception,
-                'job_class' => $payload['data']['command'] ?? null,
-                'payload' => $payload['data'] ?? [],
-            ];
-        });
-
-        return response()->json($failedJobs);
+        return response()->json($dlqTasks);
     }
 
-    public function retry(string $id)
+    /**
+     * Retry a specific failed job from DLQ
+     */
+    public function retry($id)
     {
-        $failed = DB::table('failed_jobs')->where('id', $id)->first();
-        if (! $failed) {
-            return response()->json(['message' => 'Failed job not found'], 404);
-        }
+        $result = $this->dlqService->retry((int) $id);
 
-        Artisan::call('queue:retry', ['id' => $id]);
-
-        return response()->json([
-            'message' => 'Job requeued for retry',
-            'id' => $id,
-        ]);
-    }
-
-    public function destroy(string $id)
-    {
-        $deleted = DB::table('failed_jobs')->where('id', $id)->delete();
-        if (! $deleted) {
-            return response()->json(['message' => 'Failed job not found'], 404);
+        if (!$result) {
+            return response()->json([
+                'error' => 'Failed to retry dead letter task'
+            ], 422);
         }
 
         return response()->json([
-            'message' => 'Failed job removed from DLQ',
-            'id' => $id,
+            'message' => 'Dead letter task execution successfully re-dispatched'
         ]);
     }
 
+    /**
+     * Discard a specific failed job from DLQ
+     */
+    public function destroy($id)
+    {
+        $result = $this->dlqService->delete((int) $id);
+
+        if (!$result) {
+            return response()->json([
+                'error' => 'Failed to discard dead letter task'
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => 'Dead letter task successfully discarded'
+        ]);
+    }
+
+    /**
+     * Retry a batch of failed jobs
+     */
     public function batchRetry(Request $request)
     {
-        $data = $request->validate([
-            'ids' => 'required|array|min:1',
-            'ids.*' => 'required|integer|distinct',
+        $request->validate([
+            'ids' => ['required', 'array'],
+            'ids.*' => ['required', 'integer']
         ]);
 
-        $ids = array_map('strval', $data['ids']);
-        Artisan::call('queue:retry', ['id' => implode(',', $ids)]);
+        $result = $this->dlqService->batchRetry($request->input('ids'));
 
         return response()->json([
-            'message' => 'Batch retry queued',
-            'retry_ids' => $ids,
+            'message' => "Batch processing complete. Retried: {$result['success']}, Failed: {$result['failed']}",
+            'data' => $result
         ]);
     }
 }

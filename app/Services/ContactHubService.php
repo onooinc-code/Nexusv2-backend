@@ -85,9 +85,11 @@ class ContactHubService
 
         foreach ($preferences as $key => $value) {
             $contact->preferences()->updateOrCreate(
-                ['key' => $key],
+                ['preference_type' => $key],   // correct match column on contact_preferences
                 [
-                    'value' => is_scalar($value) ? (string) $value : json_encode($value),
+                    'value'      => is_scalar($value) ? (string) $value : json_encode($value),
+                    'confidence' => 0.5,
+                    'inferred_from_count' => 1,
                 ]
             );
         }

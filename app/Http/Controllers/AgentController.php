@@ -27,6 +27,8 @@ class AgentController extends Controller
 
     public function index(Request $request)
     {
+        $this->authorize('viewAny', Agent::class);
+
         $query = Agent::query();
 
         if ($request->has('type')) {
@@ -56,6 +58,8 @@ class AgentController extends Controller
 
     public function store(Request $request)
     {
+        $this->authorize('create', Agent::class);
+
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
             'key' => 'required|string|max:255|unique:agents,key',
@@ -82,6 +86,8 @@ class AgentController extends Controller
 
     public function show(Agent $agent)
     {
+        $this->authorize('view', $agent);
+
         $agent->load(['tools', 'skills', 'tasks', 'persona', 'owner', 'mcpServers']);
         $agent->config = $this->config->load($agent);
 
@@ -90,6 +96,8 @@ class AgentController extends Controller
 
     public function update(Request $request, Agent $agent)
     {
+        $this->authorize('update', $agent);
+
         $validator = Validator::make($request->all(), [
             'name' => 'sometimes|string|max:255',
             'description' => 'nullable|string',
@@ -122,6 +130,8 @@ class AgentController extends Controller
 
     public function destroy(Agent $agent)
     {
+        $this->authorize('delete', $agent);
+
         if ($agent->is_system) {
             return response()->json(['message' => 'System agents cannot be deleted'], 403);
         }
@@ -134,6 +144,8 @@ class AgentController extends Controller
 
     public function run(Request $request, Agent $agent)
     {
+        $this->authorize('run', $agent);
+
         $validator = Validator::make($request->all(), [
             'input' => 'required',
             'async' => 'boolean',
@@ -171,6 +183,8 @@ class AgentController extends Controller
 
     public function simulate(Request $request, Agent $agent)
     {
+        $this->authorize('run', $agent);
+
         $validator = Validator::make($request->all(), [
             'input' => 'required',
             'mock_tools' => 'nullable|array',
@@ -199,6 +213,8 @@ class AgentController extends Controller
 
     public function quarantine(Request $request, Agent $agent)
     {
+        $this->authorize('quarantine', $agent);
+
         $reason = $request->input('reason', 'Manual quarantine');
         $result = $this->quarantineService->quarantine($agent, $reason);
 
@@ -207,6 +223,8 @@ class AgentController extends Controller
 
     public function unquarantine(Agent $agent)
     {
+        $this->authorize('quarantine', $agent);
+
         $result = $this->quarantineService->unquarantine($agent);
         $this->rateLimiter->clear($agent); // Reset limits so it can resume
 
@@ -215,6 +233,8 @@ class AgentController extends Controller
 
     public function getStatus(Agent $agent)
     {
+        $this->authorize('view', $agent);
+
         $agent->load(['tools', 'skills']);
 
         return response()->json([
@@ -240,6 +260,8 @@ class AgentController extends Controller
 
     public function getLogs(Request $request, Agent $agent)
     {
+        $this->authorize('view', $agent);
+
         $logs = \App\Models\AgentRuntimeLog::where('agent_id', $agent->id)
             ->orderBy('created_at', 'desc')
             ->paginate($request->per_page ?? 20);

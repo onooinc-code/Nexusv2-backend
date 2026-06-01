@@ -13,16 +13,36 @@ class ContactAnalysisFinding extends Model
     protected $fillable = [
         'contact_id',
         'analysis_run_id',
-        'type',
+        'finding_type',  // primary field used by pipeline
+        'type',          // legacy alias kept for backward compatibility
         'content',
         'confidence',
+        'confidence_score',
         'evidence_refs',
+        'metadata',
     ];
 
     protected $casts = [
         'evidence_refs' => 'array',
-        'confidence' => 'decimal:2',
+        'metadata'      => 'array',
+        'content'       => 'array',
+        'confidence'    => 'decimal:2',
+        'confidence_score' => 'decimal:2',
     ];
+
+    /**
+     * Normalise field access: prefer 'finding_type', fall back to 'type'.
+     * Ensures consumers always get a value regardless of which column was populated.
+     */
+    public function getFindingTypeAttribute(?string $value): ?string
+    {
+        return $value ?? $this->attributes['type'] ?? null;
+    }
+
+    public function getTypeAttribute(?string $value): ?string
+    {
+        return $value ?? $this->attributes['finding_type'] ?? null;
+    }
 
     public function contact(): BelongsTo
     {

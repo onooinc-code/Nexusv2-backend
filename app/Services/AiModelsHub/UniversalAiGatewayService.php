@@ -101,4 +101,31 @@ class UniversalAiGatewayService
 
         return $result;
     }
+
+    /**
+     * Generate embeddings for the given text using the appropriate AI model.
+     */
+    public function generateEmbeddings(string $text, ?Agent $agent = null): array
+    {
+        // 1. Resolve model via agent or default
+        $model = $agent ? $this->resolveModel($agent) : $this->resolveModel(new Agent());
+
+        if (!$model || !$model->provider) {
+            throw new \RuntimeException('No AI provider available for generating embeddings.');
+        }
+
+        $provider = new DynamicRestProvider($model->provider->id, $this->keyStorage);
+
+        $options = [
+            'model' => 'text-embedding-3-small', // Default for OpenAI compatibility
+        ];
+
+        $result = $provider->generateEmbeddings($text, $options);
+
+        if (!$result['success']) {
+            throw new \RuntimeException('Embedding generation failed: ' . ($result['error'] ?? 'Unknown error'));
+        }
+
+        return $result['vector'] ?? [];
+    }
 }

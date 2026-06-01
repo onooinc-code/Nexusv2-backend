@@ -581,7 +581,7 @@ class SettingController extends Controller
             'channel' => 'system',
             'type' => 'setting',
             'user_id' => $request->user()?->id,
-            'context' => ['keys' => array_keys($request->input('settings')), 'updated_count' => count($updated)],
+            'context' => ['keys' => array_column($request->input('settings'), 'key'), 'updated_count' => count($updated)],
         ]);
 
         return response()->json([
@@ -655,6 +655,70 @@ class SettingController extends Controller
                 'timestamp' => now()->toIso8601String(),
             ],
             'message' => $enabled ? 'Agent pause ACTIVATED' : 'Agent pause DEACTIVATED',
+        ]);
+    }
+
+    /**
+     * Toggle global maintenance mode (emergency control).
+     *
+     * @param Request $request
+     * @return JsonResponse
+     */
+    public function toggleMaintenanceMode(Request $request): JsonResponse
+    {
+        // Only super-admins can toggle maintenance mode
+        if (!($request->user()->is_super_admin ?? false)) {
+            return response()->json([
+                'message' => 'Forbidden',
+                'error' => 'Super-admin access required for emergency controls',
+            ], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'enabled' => ['required', 'boolean'],
+            'reason' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $enabled = $request->input('enabled');
+        $reason = $request->input('reason') ?? 'System Maintenance';
+
+        // Update setting
+        $setting = Setting::firstOrCreate(
+            ['key' => 'system.maintenance_mode'],
+            [
+                'value' => false,
+                'type' => 'boolean',
+                'group' => 'security',
+                'is_public' => true, // Make public so frontend knows
+                'description' => 'Global maintenance mode',
+            ]
+        );
+
+        $setting->update(['value' => $enabled]);
+        $this->cacheService->forget('system.maintenance_mode');
+
+        $this->logService->info('Maintenance mode toggled', [
+            'channel' => 'system',
+            'type' => 'security',
+            'user_id' => $request->user()?->id,
+            'context' => ['enabled' => $enabled, 'reason' => $reason],
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'enabled' => $enabled,
+                'reason' => $reason,
+                'timestamp' => now()->toIso8601String(),
+            ],
+            'message' => $enabled ? 'Maintenance mode ACTIVATED' : 'Maintenance mode DEACTIVATED',
         ]);
     }
 

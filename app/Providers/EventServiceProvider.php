@@ -5,8 +5,10 @@ namespace App\Providers;
 use App\Events\TaskCompletedEvent;
 use App\Events\TaskFailedEvent;
 use App\Events\TaskStatusChangedEvent;
+use App\Events\TaskMovedToDLQEvent;
 use App\Listeners\HandleTaskCompleted;
 use App\Listeners\HandleTaskFailed;
+use App\Listeners\LogDeadLetterTask;
 use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
 use Illuminate\Support\Facades\Event;
 
@@ -23,6 +25,9 @@ class EventServiceProvider extends ServiceProvider
         ],
         TaskFailedEvent::class => [
             HandleTaskFailed::class,
+        ],
+        TaskMovedToDLQEvent::class => [
+            LogDeadLetterTask::class,
         ],
         // TaskStatusChangedEvent can be handled by adding listeners as needed
     ];

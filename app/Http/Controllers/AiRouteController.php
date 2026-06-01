@@ -250,6 +250,46 @@ class AiRouteController extends Controller
     }
 
     /**
+     * Telemetry and observability dashboard data
+     */
+    public function telemetry(Request $request)
+    {
+        try {
+            $last24h = now()->subHours(24);
+            
+            $totalRequests = AiAuditTrail::where('created_at', '>=', $last24h)->count();
+            $failedRequests = AiAuditTrail::where('created_at', '>=', $last24h)->where('status', 'failed')->count();
+            $cacheHits = AiAuditTrail::where('created_at', '>=', $last24h)->whereJsonContains('metadata->cache_hit', true)->count();
+            
+            $avgLatency = AiAuditTrail::where('created_at', '>=', $last24h)->where('status', 'success')->avg('latency_ms') ?? 0;
+            
+            $providerUsage = AiAuditTrail::where('created_at', '>=', $last24h)
+                ->whereNotNull('provider_id')
+                ->select('provider_id', \DB::raw('count(*) as count'))
+                ->groupBy('provider_id')
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'period' => '24h',
+                    'total_requests' => $totalRequests,
+                    'error_rate' => $totalRequests > 0 ? round(($failedRequests / $totalRequests) * 100, 2) : 0,
+                    'cache_hit_rate' => $totalRequests > 0 ? round(($cacheHits / $totalRequests) * 100, 2) : 0,
+                    'average_latency_ms' => round($avgLatency),
+                    'provider_usage' => $providerUsage
+                ]
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error fetching telemetry: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch telemetry data'
+            ], 500);
+        }
+    }
+
+    /**
      * Executes the actual HTTP request to the AI Provider
      */
     public function executeProviderRequest($provider, $model, Request $request)

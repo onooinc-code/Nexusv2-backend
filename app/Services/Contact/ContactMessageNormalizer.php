@@ -39,8 +39,8 @@ class ContactMessageNormalizer
                 // Calculate dedupe hash
                 $dedupeHash = $this->calculateHash($parsedMsg);
 
-                // Check if message already exists (duplicate detection)
-                if ($this->messageExists($dedupeHash)) {
+                // Check if message already exists for this contact (per-contact duplicate detection)
+                if ($this->messageExists($dedupeHash, $contact->id)) {
                     $result['duplicates']++;
                     continue;
                 }
@@ -240,14 +240,19 @@ class ContactMessageNormalizer
     }
 
     /**
-     * Check if message already exists
+     * Check if message already exists for the given contact.
+     * Scoped to contact_id to prevent cross-contact hash collisions
+     * (e.g. the same message text in a group chat imported for two contacts).
      *
      * @param string $dedupeHash
+     * @param int    $contactId
      * @return bool
      */
-    private function messageExists(string $dedupeHash): bool
+    private function messageExists(string $dedupeHash, int $contactId): bool
     {
-        return ContactMessage::where('dedupe_hash', $dedupeHash)->exists();
+        return ContactMessage::where('contact_id', $contactId)
+            ->where('dedupe_hash', $dedupeHash)
+            ->exists();
     }
 
     /**

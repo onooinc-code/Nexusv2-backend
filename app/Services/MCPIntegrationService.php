@@ -116,13 +116,54 @@ class MCPIntegrationService
 
         Log::info("MCP tool called: {$toolName} on {$serverName}", $params);
 
-        // Real MCP protocol call would go here (HTTP/stdio depending on server type)
+        if ($server->type === 'remote') {
+            $config = $server->connection_config ?? [];
+            $url = rtrim($config['url'] ?? '', '/');
+            
+            if (!$url) {
+                throw new \RuntimeException("No URL configured for remote MCP server [{$serverName}]");
+            }
+            
+            try {
+                $response = \Illuminate\Support\Facades\Http::timeout(30)->post($url . '/tools/call', [
+                    'jsonrpc' => '2.0',
+                    'id' => uniqid(),
+                    'method' => 'tools/call',
+                    'params' => [
+                        'name' => $toolName,
+                        'arguments' => $params
+                    ]
+                ]);
+                
+                if (!$response->successful()) {
+                    throw new \RuntimeException("MCP Tool execution failed: " . $response->body());
+                }
+                
+                return [
+                    'success'   => true,
+                    'server'    => $serverName,
+                    'tool'      => $toolName,
+                    'params'    => $params,
+                    'result'    => $response->json('result') ?? $response->json(),
+                    'called_at' => now()->toISOString(),
+                ];
+            } catch (\Exception $e) {
+                return [
+                    'success'   => false,
+                    'server'    => $serverName,
+                    'tool'      => $toolName,
+                    'error'     => $e->getMessage(),
+                    'called_at' => now()->toISOString(),
+                ];
+            }
+        }
+
         return [
             'success'   => true,
             'server'    => $serverName,
             'tool'      => $toolName,
             'params'    => $params,
-            'result'    => "Tool {$toolName} executed on {$serverName}",
+            'result'    => "Tool {$toolName} executed on {$serverName} (local fallback)",
             'called_at' => now()->toISOString(),
         ];
     }

@@ -111,18 +111,21 @@ class SettingCacheService
         $setting = Setting::where('key', $key)->first();
         if ($setting) {
             $setting->update(['value' => $value]);
-            $this->forget($key);
+            $this->forget($key, $setting->group);
         }
     }
 
-    /**
-     * Forget a cached setting.
-     *
-     * @param string $key
-     * @return void
-     */
-    public function forget(string $key): void
+    public function forget(string $key, ?string $group = null): void
     {
+        if (!$group) {
+            $setting = Setting::where('key', $key)->first();
+            $group = $setting?->group;
+        }
+
+        if ($group) {
+            Cache::forget("settings.group.{$group}");
+        }
+
         Cache::forget("setting.{$key}");
         Cache::forget('settings.all');
         Cache::forget('settings.public');
@@ -137,6 +140,17 @@ class SettingCacheService
     {
         Cache::forget('settings.all');
         Cache::forget('settings.public');
+        
+        $settings = Setting::select('key', 'group')->get();
+        $groups = [];
+        
+        foreach ($settings as $setting) {
+            Cache::forget("setting.{$setting->key}");
+            if ($setting->group && !isset($groups[$setting->group])) {
+                $groups[$setting->group] = true;
+                Cache::forget("settings.group.{$setting->group}");
+            }
+        }
     }
 
     /**
